@@ -51,6 +51,16 @@ pnpm version         # bump versions
 pnpm release         # build + publish
 ```
 
+### NPM_TOKEN setup (maintainers only)
+
+Publishing is automated via GitHub Actions when a `v*` tag is pushed. To set up:
+
+1. Create an npm access token at <https://www.npmjs.com/settings/tokens>
+2. Add it as `NPM_TOKEN` in GitHub repo Settings → Secrets → Actions
+3. Push a tag: `git tag v0.1.0 && git push origin v0.1.0`
+
+The `publish.yml` workflow will build and publish all 3 packages to npm.
+
 ## Security
 
 If you find a security issue, please see [SECURITY.md](SECURITY.md). Do **not** open a public issue.
