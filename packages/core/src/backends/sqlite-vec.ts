@@ -4,6 +4,7 @@ import type {
   VectorStoreResult,
 } from "../interfaces/index.js";
 import { cosineSimilarity } from "../utils/index.js";
+import { EmbedderError } from "../errors.js";
 import type { Logger } from "../memory.js";
 
 /**
@@ -110,7 +111,7 @@ export class SqliteVecStore implements VectorStore {
     // #38: Validate embedding dimensions
     for (let i = 0; i < vectors.length; i++) {
       if (vectors[i]!.length !== this.dimension) {
-        throw new Error(
+        throw new EmbedderError(
           `Embedding dimension mismatch: expected ${this.dimension}, got ${vectors[i]!.length} (index ${i})`,
         );
       }

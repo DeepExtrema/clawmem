@@ -8,6 +8,7 @@
 [![npm @clawmem/core](https://img.shields.io/npm/v/@clawmem/core)](https://www.npmjs.com/package/@clawmem/core)
 [![npm @clawmem/openclaw](https://img.shields.io/npm/v/@clawmem/openclaw)](https://www.npmjs.com/package/@clawmem/openclaw)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+[![Tests: 130+](https://img.shields.io/badge/tests-130%2B-brightgreen)](packages/core/tests/)
 
 ---
 
@@ -146,10 +147,38 @@ git clone https://github.com/DeepExtrema/clawmem
 cd clawmem
 pnpm install
 pnpm build
-pnpm test
+pnpm test          # 130+ tests across core, CLI, and plugin
 ```
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidelines.
+### Optional: Enable ANN vector search
+
+```bash
+# Install sqlite-vec for fast approximate nearest neighbor search
+# Without it, ClawMem falls back to O(n) cosine similarity (fine for <10k memories)
+pnpm add sqlite-vec --filter @clawmem/core
+```
+
+### Error Types
+
+ClawMem exports typed errors for structured error handling:
+
+```typescript
+import { ClawMemError, LLMError, EmbedderError, StorageError } from "@clawmem/core";
+
+try {
+  await memory.add(messages, { userId: "user1" });
+} catch (err) {
+  if (err instanceof LLMError) {
+    // LLM timeout, HTTP error, or empty response
+  } else if (err instanceof EmbedderError) {
+    // Embedding dimension mismatch, timeout, or HTTP error
+  } else if (err instanceof StorageError) {
+    // Database error
+  }
+}
+```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidelines and [docs/](docs/) for full API reference.
 
 ---
 

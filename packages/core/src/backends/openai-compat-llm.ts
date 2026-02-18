@@ -1,4 +1,5 @@
 import type { LLM, LLMConfig, LLMMessage } from "../interfaces/index.js";
+import { LLMError } from "../errors.js";
 
 const DEFAULT_LLM_TIMEOUT_MS = 60_000;
 
@@ -60,7 +61,7 @@ export class OpenAICompatLLM implements LLM {
 
       if (!response.ok) {
         const text = await response.text();
-        throw new Error(`LLM request failed (${response.status}): ${text}`);
+        throw new LLMError(`LLM request failed (${response.status}): ${text}`);
       }
 
       const data = (await response.json()) as {
@@ -69,12 +70,12 @@ export class OpenAICompatLLM implements LLM {
 
       const content = data.choices[0]?.message?.content;
       if (content === undefined || content === null) {
-        throw new Error("LLM returned empty response");
+        throw new LLMError("LLM returned empty response");
       }
       return content;
     } catch (err) {
       if (err instanceof DOMException && err.name === "AbortError") {
-        throw new Error(`LLM request timed out after ${this.timeoutMs}ms`);
+        throw new LLMError(`LLM request timed out after ${this.timeoutMs}ms`);
       }
       throw err;
     } finally {

@@ -1,4 +1,5 @@
 import type { Embedder, EmbedderConfig } from "../interfaces/index.js";
+import { EmbedderError } from "../errors.js";
 
 const DEFAULT_EMBEDDER_TIMEOUT_MS = 30_000;
 const DEFAULT_BATCH_SIZE = 10;
@@ -32,7 +33,7 @@ export class OpenAICompatEmbedder implements Embedder {
   async embed(text: string): Promise<number[]> {
     const results = await this.embedBatch([text]);
     const first = results[0];
-    if (!first) throw new Error("Embedder returned no results");
+    if (!first) throw new EmbedderError("Embedder returned no results");
     return first;
   }
 
@@ -70,7 +71,7 @@ export class OpenAICompatEmbedder implements Embedder {
 
       if (!response.ok) {
         const text = await response.text();
-        throw new Error(`Embedder request failed (${response.status}): ${text}`);
+        throw new EmbedderError(`Embedder request failed (${response.status}): ${text}`);
       }
 
       const data = (await response.json()) as {
@@ -82,7 +83,7 @@ export class OpenAICompatEmbedder implements Embedder {
         .map((item) => item.embedding);
     } catch (err) {
       if (err instanceof DOMException && err.name === "AbortError") {
-        throw new Error(`Embedder request timed out after ${this.timeoutMs}ms`);
+        throw new EmbedderError(`Embedder request timed out after ${this.timeoutMs}ms`);
       }
       throw err;
     } finally {

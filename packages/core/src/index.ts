@@ -6,6 +6,9 @@
 export { Memory } from "./memory.js";
 export type { ClawMemConfig } from "./memory.js";
 
+// Errors
+export { ClawMemError, LLMError, EmbedderError, StorageError } from "./errors.js";
+
 // Interfaces
 export type {
   MemoryItem,
