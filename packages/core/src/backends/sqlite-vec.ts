@@ -3,7 +3,6 @@ import type {
   VectorStore,
   VectorStoreResult,
 } from "../interfaces/index.js";
-import { cosineSimilarity } from "../utils/index.js";
 import { EmbedderError } from "../errors.js";
 import type { Logger } from "../memory.js";
 
@@ -44,19 +43,26 @@ export class SqliteVecStore implements VectorStore {
   }
 
   private init(): void {
+    const shouldAttemptVecLoad =
+      process.env["CLAWMEM_DISABLE_SQLITE_VEC"] !== "1" &&
+      process.env["VITEST"] !== "true" &&
+      process.env["NODE_ENV"] !== "test";
+
     // Try to load sqlite-vec extension
-    try {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const sqliteVec = require("sqlite-vec");
-      sqliteVec.load(this.db);
-      this.hasVecExtension = true;
-    } catch {
-      // sqlite-vec not available — O(n) linear fallback
-      const msg = "[clawmem] sqlite-vec extension not available — falling back to O(n) linear cosine similarity. Install sqlite-vec for ANN search.";
-      if (this.log) {
-        this.log.warn(msg);
-      } else {
-        console.warn(msg);
+    if (shouldAttemptVecLoad) {
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const sqliteVec = require("sqlite-vec");
+        sqliteVec.load(this.db);
+        this.hasVecExtension = true;
+      } catch {
+        // sqlite-vec not available — O(n) linear fallback
+        const msg = "[clawmem] sqlite-vec extension not available — falling back to O(n) linear cosine similarity. Install sqlite-vec for ANN search.";
+        if (this.log) {
+          this.log.warn(msg);
+        } else {
+          console.warn(msg);
+        }
       }
     }
 
@@ -134,14 +140,14 @@ export class SqliteVecStore implements VectorStore {
       `DELETE FROM memories_fts WHERE id = @id`,
     );
 
+    const deleteVec = this.db.prepare(`DELETE FROM memories_vec WHERE id = ?`);
+
     const insertVec = this.hasVecExtension
       ? this.db.prepare(
-          `INSERT INTO memories_vec (id, embedding) VALUES (?, vec_f32(?))
-           ON CONFLICT(id) DO UPDATE SET embedding = excluded.embedding`,
+          `INSERT INTO memories_vec (id, embedding) VALUES (?, vec_f32(?))`,
         )
       : this.db.prepare(
-          `INSERT INTO memories_vec (id, embedding) VALUES (?, ?)
-           ON CONFLICT(id) DO UPDATE SET embedding = excluded.embedding`,
+          `INSERT INTO memories_vec (id, embedding) VALUES (?, ?)`,
         );
 
     const tx = this.db.transaction(() => {
@@ -157,6 +163,7 @@ export class SqliteVecStore implements VectorStore {
         insertFts.run({ id, content, userId });
 
         const vecBuffer = Buffer.from(new Float32Array(vector).buffer);
+        deleteVec.run(id);
         insertVec.run(id, vecBuffer);
       }
     });
@@ -175,14 +182,58 @@ export class SqliteVecStore implements VectorStore {
     return this.searchFallback(query, limit, filters);
   }
 
+  private buildSearchConditions(
+    filters: Record<string, unknown> | undefined,
+    tableAlias: string,
+  ): { conditions: string[]; params: unknown[] } {
+    const conditions: string[] = [];
+    const params: unknown[] = [];
+
+    const userId = filters?.["userId"] as string | undefined;
+    const isLatest = filters?.["isLatest"] as boolean | undefined;
+    const category = filters?.["category"] as string | undefined;
+    const memoryType = filters?.["memoryType"] as string | undefined;
+    const fromDate = filters?.["fromDate"] as string | undefined;
+    const toDate = filters?.["toDate"] as string | undefined;
+
+    if (userId) {
+      conditions.push(`${tableAlias}.user_id = ?`);
+      params.push(userId);
+    }
+    if (isLatest !== undefined) {
+      conditions.push(`json_extract(${tableAlias}.payload, '$.isLatest') = ?`);
+      params.push(isLatest ? 1 : 0);
+    }
+    if (category) {
+      conditions.push(`json_extract(${tableAlias}.payload, '$.category') = ?`);
+      params.push(category);
+    }
+    if (memoryType) {
+      conditions.push(`json_extract(${tableAlias}.payload, '$.memoryType') = ?`);
+      params.push(memoryType);
+    }
+    if (fromDate) {
+      conditions.push(`COALESCE(json_extract(${tableAlias}.payload, '$.eventDate'), json_extract(${tableAlias}.payload, '$.createdAt')) >= ?`);
+      params.push(fromDate);
+    }
+    if (toDate) {
+      conditions.push(`COALESCE(json_extract(${tableAlias}.payload, '$.eventDate'), json_extract(${tableAlias}.payload, '$.createdAt')) <= ?`);
+      params.push(toDate);
+    }
+
+    return { conditions, params };
+  }
+
   private searchVec(
     query: number[],
     limit: number,
     filters?: Record<string, unknown>,
   ): VectorStoreResult[] {
     const queryBuffer = Buffer.from(new Float32Array(query).buffer);
-    const userId = filters?.["userId"] as string | undefined;
-    const isLatest = filters?.["isLatest"] as boolean | undefined;
+    const { conditions, params: filterParams } = this.buildSearchConditions(
+      filters,
+      "m",
+    );
 
     let sql = `
       SELECT m.id, m.payload, v.distance
@@ -190,15 +241,10 @@ export class SqliteVecStore implements VectorStore {
       JOIN memories m ON v.id = m.id
       WHERE v.embedding MATCH ? AND k = ?
     `;
-    const params: unknown[] = [queryBuffer, limit * 2];
+    const params: unknown[] = [queryBuffer, limit * 2, ...filterParams];
 
-    if (userId) {
-      sql += ` AND m.user_id = ?`;
-      params.push(userId);
-    }
-    if (isLatest !== undefined) {
-      sql += ` AND json_extract(m.payload, '$.isLatest') = ?`;
-      params.push(isLatest ? 1 : 0);
+    if (conditions.length > 0) {
+      sql += ` AND ${conditions.join(" AND ")}`;
     }
 
     sql += ` ORDER BY v.distance LIMIT ?`;
@@ -222,22 +268,12 @@ export class SqliteVecStore implements VectorStore {
     limit: number,
     filters?: Record<string, unknown>,
   ): VectorStoreResult[] {
-    const userId = filters?.["userId"] as string | undefined;
-    const isLatest = filters?.["isLatest"] as boolean | undefined;
+    if (limit <= 0) return [];
 
     let sql = `SELECT m.id, m.payload, v.embedding FROM memories_vec v JOIN memories m ON v.id = m.id`;
-    const conditions: string[] = [];
-    const params: unknown[] = [];
+    const { conditions, params } = this.buildSearchConditions(filters, "m");
     const FALLBACK_LIMIT = 50000;
 
-    if (userId) {
-      conditions.push(`m.user_id = ?`);
-      params.push(userId);
-    }
-    if (isLatest !== undefined) {
-      conditions.push(`json_extract(m.payload, '$.isLatest') = ?`);
-      params.push(isLatest ? 1 : 0);
-    }
     if (conditions.length > 0) {
       sql += ` WHERE ${conditions.join(" AND ")}`;
     }
@@ -254,17 +290,57 @@ export class SqliteVecStore implements VectorStore {
       this.log.warn(`searchFallback: result set truncated at ${FALLBACK_LIMIT} rows — consider installing sqlite-vec`);
     }
 
-    const scored = rows.map((row) => {
+    const top: Array<{
+      id: string;
+      payloadJson: string;
+      score: number;
+    }> = [];
+    for (const row of rows) {
       const vec = new Float32Array(row.embedding.buffer, row.embedding.byteOffset, row.embedding.byteLength / 4);
-      const score = cosineSimilarity(query, Array.from(vec));
-      return {
+      const score = this.cosineSimilarityFloat(query, vec);
+      const candidate = {
         id: row.id,
-        payload: JSON.parse(row.payload) as Record<string, unknown>,
+        payloadJson: row.payload,
         score,
       };
-    });
+      let inserted = false;
+      for (let i = 0; i < top.length; i++) {
+        if (score > top[i]!.score) {
+          top.splice(i, 0, candidate);
+          inserted = true;
+          break;
+        }
+      }
+      if (!inserted && top.length < limit) {
+        top.push(candidate);
+      }
+      if (top.length > limit) {
+        top.pop();
+      }
+    }
 
-    return scored.sort((a, b) => b.score - a.score).slice(0, limit);
+    return top.map((row) => ({
+      id: row.id,
+      payload: JSON.parse(row.payloadJson) as Record<string, unknown>,
+      score: row.score,
+    }));
+  }
+
+  private cosineSimilarityFloat(query: number[], embedding: Float32Array): number {
+    const len = Math.min(query.length, embedding.length);
+    if (len === 0) return 0;
+    let dot = 0;
+    let qNorm = 0;
+    let eNorm = 0;
+    for (let i = 0; i < len; i++) {
+      const q = query[i]!;
+      const e = embedding[i]!;
+      dot += q * e;
+      qNorm += q * q;
+      eNorm += e * e;
+    }
+    if (qNorm === 0 || eNorm === 0) return 0;
+    return dot / (Math.sqrt(qNorm) * Math.sqrt(eNorm));
   }
 
   async keywordSearch(
@@ -272,9 +348,6 @@ export class SqliteVecStore implements VectorStore {
     limit: number,
     filters?: Record<string, unknown>,
   ): Promise<VectorStoreResult[]> {
-    const userId = filters?.["userId"] as string | undefined;
-    const isLatest = filters?.["isLatest"] as boolean | undefined;
-
     // #46: Quote FTS5 tokens to prevent syntax injection
     const safeQuery = query
       .split(/\s+/)
@@ -291,15 +364,13 @@ export class SqliteVecStore implements VectorStore {
       WHERE memories_fts MATCH ?
     `;
     const params: unknown[] = [safeQuery];
-
-    if (userId) {
-      sql += ` AND f.user_id = ?`;
-      params.push(userId);
-    }
-    // #37: isLatest filter for keyword search
-    if (isLatest !== undefined) {
-      sql += ` AND json_extract(m.payload, '$.isLatest') = ?`;
-      params.push(isLatest ? 1 : 0);
+    const { conditions, params: filterParams } = this.buildSearchConditions(
+      filters,
+      "m",
+    );
+    if (conditions.length > 0) {
+      sql += ` AND ${conditions.join(" AND ")}`;
+      params.push(...filterParams);
     }
 
     sql += ` ORDER BY score LIMIT ?`;
@@ -344,22 +415,9 @@ export class SqliteVecStore implements VectorStore {
     limit = 100,
     offset = 0,
   ): Promise<[VectorStoreResult[], number]> {
-    const userId = filters?.["userId"] as string | undefined;
-    const isLatest = filters?.["isLatest"] as boolean | undefined;
-
     // #63: Single query with window function instead of separate count query
     // #23: Push isLatest filter to SQL
-    const conditions: string[] = [];
-    const params: unknown[] = [];
-
-    if (userId) {
-      conditions.push(`user_id = ?`);
-      params.push(userId);
-    }
-    if (isLatest !== undefined) {
-      conditions.push(`json_extract(payload, '$.isLatest') = ?`);
-      params.push(isLatest ? 1 : 0);
-    }
+    const { conditions, params } = this.buildSearchConditions(filters, "memories");
 
     const where = conditions.length > 0 ? ` WHERE ${conditions.join(" AND ")}` : "";
     const sql = `SELECT id, payload, COUNT(*) OVER() as total FROM memories${where} ORDER BY created_at DESC LIMIT ? OFFSET ?`;

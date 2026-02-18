@@ -1,12 +1,31 @@
 import { describe, it, expect } from "vitest";
 import { MockLLM, MockEmbedder, makeMemory } from "./helpers.js";
 import type { LLM, LLMMessage, Embedder } from "../src/interfaces/index.js";
+import { Memory } from "../src/memory.js";
+import { join } from "path";
+import { tmpdir } from "os";
+import { randomUUID } from "crypto";
+import { rmSync } from "fs";
 
 // ---------------------------------------------------------------------------
 // Error-path tests (Fix #11)
 // ---------------------------------------------------------------------------
 
 describe("Error handling", () => {
+  it("throws at startup when encryption config is provided", () => {
+    const dataDir = join(tmpdir(), `clawmem-encryption-test-${randomUUID()}`);
+    expect(() =>
+      new Memory({
+        dataDir,
+        llm: { baseURL: "http://127.0.0.1:1/v1" },
+        embedder: { baseURL: "http://127.0.0.1:2/v1" },
+        enableGraph: false,
+        encryption: { passphrase: "test-passphrase" },
+      }),
+    ).toThrow("encryption-at-rest is not implemented yet");
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
   it("add() returns empty result when LLM extraction returns invalid JSON", async () => {
     const llm = new MockLLM(["this is not json"]);
     const { memory: mem } = makeMemory(llm, new MockEmbedder());

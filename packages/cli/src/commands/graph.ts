@@ -1,6 +1,63 @@
 import type { Command } from "commander";
 import { withMemory } from "../command-base.js";
 
+const DEFAULT_RELATION_LIMIT = 50;
+const DEFAULT_ENTITY_LIMIT = 100;
+const MAX_LIMIT = 500;
+
+function parsePositiveInt(
+  raw: string | undefined,
+  fallback: number,
+  flagName: string,
+): number {
+  if (!raw) return fallback;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    throw new Error(`${flagName} must be a positive integer`);
+  }
+  return Math.min(parsed, MAX_LIMIT);
+}
+
+function parseOffset(raw: string | undefined): number {
+  if (!raw) return 0;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    throw new Error("--offset must be a non-negative integer");
+  }
+  return parsed;
+}
+
+function printRelations(
+  title: string,
+  relations: Array<{ sourceName: string; relationship: string; targetName: string }>,
+): void {
+  if (relations.length === 0) {
+    console.log("No graph relationships found.");
+    return;
+  }
+  console.log(`\n${title}\n`);
+  for (const r of relations) {
+    console.log(`  ${r.sourceName} —[${r.relationship}]→ ${r.targetName}`);
+  }
+  console.log();
+}
+
+function printEntities(
+  entities: Array<{ name: string; relationCount: number }>,
+): void {
+  if (entities.length === 0) {
+    console.log("No entities found.");
+    return;
+  }
+  console.log(`\n🔵 ${entities.length} entity/entities:\n`);
+  for (const e of entities) {
+    console.log(
+      `  ${e.name} (${e.relationCount} relation${e.relationCount !== 1 ? "s" : ""})`,
+    );
+  }
+  console.log();
+}
+
 export function registerGraph(program: Command): void {
   const graph = program
     .command("graph")
@@ -11,30 +68,24 @@ export function registerGraph(program: Command): void {
     .description("List all entity relationships")
     .option("-u, --user <id>", "User ID")
     .option("-n, --limit <n>", "Max results", "50")
+    .option("-o, --offset <n>", "Pagination offset", "0")
     .option("--json", "Output as JSON")
-    .action(async (opts: { user?: string; limit: string; json?: boolean }) => {
+    .action(async (opts: {
+      user?: string;
+      limit?: string;
+      offset?: string;
+      json?: boolean;
+    }) => {
       await withMemory(opts, async ({ mem, userId }) => {
-        const rels = await mem.graphRelations(userId);
-        const limited = rels.slice(0, parseInt(opts.limit, 10));
+        const limit = parsePositiveInt(opts.limit, DEFAULT_RELATION_LIMIT, "--limit");
+        const offset = parseOffset(opts.offset);
+        const relations = await mem.graphRelations(userId, { limit, offset });
 
         if (opts.json) {
-          console.log(JSON.stringify(limited, null, 2));
+          console.log(JSON.stringify(relations, null, 2));
           return;
         }
-
-        if (limited.length === 0) {
-          console.log("No graph relationships found.");
-          return;
-        }
-
-        console.log(`\n🕸️  ${limited.length} relationship(s):\n`);
-        for (const r of limited) {
-          console.log(`  ${r.source} —[${r.relationship}]→ ${r.target}`);
-        }
-        if (rels.length > limited.length) {
-          console.log(`\n  … and ${rels.length - limited.length} more (use --limit)`);
-        }
-        console.log();
+        printRelations(`🕸️  ${relations.length} relationship(s):`, relations);
       });
     });
 
@@ -42,40 +93,31 @@ export function registerGraph(program: Command): void {
     .command("entities")
     .description("List unique entities in the graph")
     .option("-u, --user <id>", "User ID")
+    .option("-n, --limit <n>", "Max entities", "100")
+    .option("-o, --offset <n>", "Pagination offset", "0")
+    .option("-q, --query <text>", "Filter entity names")
     .option("--json", "Output as JSON")
-    .action(async (opts: { user?: string; json?: boolean }) => {
+    .action(async (opts: {
+      user?: string;
+      limit?: string;
+      offset?: string;
+      query?: string;
+      json?: boolean;
+    }) => {
       await withMemory(opts, async ({ mem, userId }) => {
-        const rels = await mem.graphRelations(userId);
-
-        // Collect unique entities from source + target fields
-        const entities = new Map<string, { name: string; count: number }>();
-        for (const r of rels) {
-          const src = entities.get(r.source) ?? { name: r.source, count: 0 };
-          src.count++;
-          entities.set(r.source, src);
-
-          const tgt = entities.get(r.target) ?? { name: r.target, count: 0 };
-          tgt.count++;
-          entities.set(r.target, tgt);
-        }
-
-        const sorted = [...entities.values()].sort((a, b) => b.count - a.count);
+        const limit = parsePositiveInt(opts.limit, DEFAULT_ENTITY_LIMIT, "--limit");
+        const offset = parseOffset(opts.offset);
+        const entities = await mem.graphEntities(userId, {
+          ...(opts.query !== undefined && { query: opts.query }),
+          limit,
+          offset,
+        });
 
         if (opts.json) {
-          console.log(JSON.stringify(sorted, null, 2));
+          console.log(JSON.stringify(entities, null, 2));
           return;
         }
-
-        if (sorted.length === 0) {
-          console.log("No entities found.");
-          return;
-        }
-
-        console.log(`\n🔵 ${sorted.length} entity/entities:\n`);
-        for (const e of sorted) {
-          console.log(`  ${e.name} (${e.count} relation${e.count !== 1 ? "s" : ""})`);
-        }
-        console.log();
+        printEntities(entities);
       });
     });
 
@@ -83,16 +125,19 @@ export function registerGraph(program: Command): void {
     .command("search <entity>")
     .description("Search for relationships involving an entity")
     .option("-u, --user <id>", "User ID")
+    .option("-n, --limit <n>", "Max results", "50")
+    .option("-o, --offset <n>", "Pagination offset", "0")
     .option("--json", "Output as JSON")
-    .action(async (entity: string, opts: { user?: string; json?: boolean }) => {
+    .action(async (entity: string, opts: {
+      user?: string;
+      limit?: string;
+      offset?: string;
+      json?: boolean;
+    }) => {
       await withMemory(opts, async ({ mem, userId }) => {
-        const rels = await mem.graphRelations(userId);
-        const needle = entity.toLowerCase();
-        const matches = rels.filter(
-          (r) =>
-            r.source.toLowerCase().includes(needle) ||
-            r.target.toLowerCase().includes(needle),
-        );
+        const limit = parsePositiveInt(opts.limit, DEFAULT_RELATION_LIMIT, "--limit");
+        const offset = parseOffset(opts.offset);
+        const matches = await mem.graphSearch(entity, userId, { limit, offset });
 
         if (opts.json) {
           console.log(JSON.stringify(matches, null, 2));
@@ -104,11 +149,10 @@ export function registerGraph(program: Command): void {
           return;
         }
 
-        console.log(`\n🔍 ${matches.length} relationship(s) matching "${entity}":\n`);
-        for (const r of matches) {
-          console.log(`  ${r.source} —[${r.relationship}]→ ${r.target}`);
-        }
-        console.log();
+        printRelations(
+          `🔍 ${matches.length} relationship(s) matching "${entity}":`,
+          matches,
+        );
       });
     });
 }

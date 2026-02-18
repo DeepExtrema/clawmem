@@ -1,6 +1,10 @@
 import { mkdirSync } from "fs";
 import { randomUUID } from "crypto";
-import type { GraphStore, GraphRelation } from "../interfaces/index.js";
+import type {
+  GraphStore,
+  GraphRelation,
+  GraphEntitySummary,
+} from "../interfaces/index.js";
 import { now } from "../utils/index.js";
 
 export interface KuzuConfig {
@@ -161,32 +165,85 @@ export class KuzuGraphStore implements GraphStore {
   }
 
   async search(
-    _query: string,
+    query: string,
     userId: string,
     limit = 10,
+    offset = 0,
   ): Promise<GraphRelation[]> {
     await this.ensureInit();
-    // Simple: return recent relationships for this user
-    // Full-text graph search can be enhanced later
+    const requested = Math.max(limit + offset, limit);
     const rows = await this.query(
       `MATCH (src:Entity {user_id: $userId})-[r:RELATES_TO]->(tgt:Entity {user_id: $userId})
        RETURN src.id, src.name, r.relationship, tgt.id, tgt.name, r.confidence, r.created_at
        ORDER BY r.created_at DESC LIMIT $limit`,
-      { userId, limit },
+      { userId, limit: requested },
     ) as Array<Record<string, unknown>>;
 
-    return rows.map(rowToRelation);
+    const needle = query.trim().toLowerCase();
+    const relations = rows.map(rowToRelation).filter((rel) =>
+      needle.length === 0
+        ? true
+        : rel.sourceName.toLowerCase().includes(needle) ||
+          rel.targetName.toLowerCase().includes(needle) ||
+          rel.relationship.toLowerCase().includes(needle),
+    );
+
+    return relations.slice(offset, offset + limit);
   }
 
-  async getAll(userId: string): Promise<GraphRelation[]> {
+  async getAll(
+    userId: string,
+    limit?: number,
+    offset = 0,
+  ): Promise<GraphRelation[]> {
     await this.ensureInit();
+    const requested = limit !== undefined
+      ? Math.max(limit + offset, limit)
+      : undefined;
     const rows = await this.query(
-      `MATCH (src:Entity {user_id: $userId})-[r:RELATES_TO]->(tgt:Entity {user_id: $userId})
-       RETURN src.id, src.name, r.relationship, tgt.id, tgt.name, r.confidence, r.created_at`,
-      { userId },
+      requested !== undefined
+        ? `MATCH (src:Entity {user_id: $userId})-[r:RELATES_TO]->(tgt:Entity {user_id: $userId})
+           RETURN src.id, src.name, r.relationship, tgt.id, tgt.name, r.confidence, r.created_at
+           ORDER BY r.created_at DESC LIMIT $limit`
+        : `MATCH (src:Entity {user_id: $userId})-[r:RELATES_TO]->(tgt:Entity {user_id: $userId})
+           RETURN src.id, src.name, r.relationship, tgt.id, tgt.name, r.confidence, r.created_at`,
+      requested !== undefined ? { userId, limit: requested } : { userId },
     ) as Array<Record<string, unknown>>;
 
-    return rows.map(rowToRelation);
+    const relations = rows.map(rowToRelation);
+    if (limit === undefined) {
+      return relations;
+    }
+    return relations.slice(offset, offset + limit);
+  }
+
+  async listEntities(
+    userId: string,
+    limit = 100,
+    offset = 0,
+    query = "",
+  ): Promise<GraphEntitySummary[]> {
+    const relations = await this.getAll(userId);
+    const counts = new Map<string, number>();
+    for (const rel of relations) {
+      counts.set(rel.sourceName, (counts.get(rel.sourceName) ?? 0) + 1);
+      counts.set(rel.targetName, (counts.get(rel.targetName) ?? 0) + 1);
+    }
+
+    const needle = query.trim().toLowerCase();
+    const entities = Array.from(counts.entries())
+      .map(([name, relationCount]) => ({ name, relationCount }))
+      .filter((entry) =>
+        needle.length === 0 ? true : entry.name.toLowerCase().includes(needle),
+      )
+      .sort((a, b) => {
+        if (b.relationCount !== a.relationCount) {
+          return b.relationCount - a.relationCount;
+        }
+        return a.name.localeCompare(b.name);
+      });
+
+    return entities.slice(offset, offset + limit);
   }
 
   async getNeighbors(entityName: string, userId: string): Promise<GraphRelation[]> {

@@ -75,6 +75,64 @@ describe("SqliteVecStore", () => {
     expect(results[0]!.payload["memory"]).toBe("New");
   });
 
+  it("search pushes down category and memoryType filters", async () => {
+    const s = createStore();
+    await s.insert([vec1, vec2], ["id1", "id2"], [
+      {
+        memory: "TypeScript preference",
+        userId: "u1",
+        hash: "h1",
+        isLatest: true,
+        category: "technical",
+        memoryType: "preference",
+      },
+      {
+        memory: "Travel plan",
+        userId: "u1",
+        hash: "h2",
+        isLatest: true,
+        category: "life_events",
+        memoryType: "episode",
+      },
+    ]);
+
+    const results = await s.search(vec1, 5, {
+      userId: "u1",
+      category: "technical",
+      memoryType: "preference",
+    });
+    expect(results.length).toBe(1);
+    expect(results[0]!.payload["memory"]).toBe("TypeScript preference");
+  });
+
+  it("search pushes down date range filters", async () => {
+    const s = createStore();
+    await s.insert([vec1, vec2], ["id1", "id2"], [
+      {
+        memory: "Old memory",
+        userId: "u1",
+        hash: "h1",
+        isLatest: true,
+        createdAt: "2020-01-01T00:00:00.000Z",
+      },
+      {
+        memory: "Recent memory",
+        userId: "u1",
+        hash: "h2",
+        isLatest: true,
+        createdAt: "2026-01-01T00:00:00.000Z",
+      },
+    ]);
+
+    const results = await s.search(vec1, 5, {
+      userId: "u1",
+      fromDate: "2025-01-01T00:00:00.000Z",
+      toDate: "2027-01-01T00:00:00.000Z",
+    });
+    expect(results.length).toBe(1);
+    expect(results[0]!.payload["memory"]).toBe("Recent memory");
+  });
+
   it("delete removes from all tables", async () => {
     const s = createStore();
     await s.insert([vec1], ["id1"], [payload1]);

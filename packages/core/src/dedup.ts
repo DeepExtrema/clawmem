@@ -101,7 +101,10 @@ export async function deduplicate(
     if (!matchById) {
       const idx = parseInt(resolvedTargetId, 10);
       if (!isNaN(idx) && idx >= 0 && idx < candidates.length) {
-        resolvedTargetId = candidates[idx].id;
+        const candidateAtIndex = candidates[idx];
+        if (candidateAtIndex) {
+          resolvedTargetId = candidateAtIndex.id;
+        }
       }
     }
   }

@@ -15,10 +15,11 @@ export async function withMemory(
   opts: { user?: string },
   fn: (ctx: CommandContext) => Promise<void>,
 ): Promise<void> {
-  const config = loadConfig();
-  const mem = createMemory(config);
-  const userId = opts.user ?? config.userId;
+  let mem: Memory | null = null;
   try {
+    const config = loadConfig();
+    mem = createMemory(config);
+    const userId = opts.user ?? config.userId;
     await fn({ mem, userId, config });
   } catch (err) {
     console.error(
@@ -27,6 +28,8 @@ export async function withMemory(
     );
     process.exitCode = 1;
   } finally {
-    await mem.close();
+    if (mem) {
+      await mem.close();
+    }
   }
 }

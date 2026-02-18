@@ -6,6 +6,8 @@ import type {
   Embedder,
   LLM,
   GraphStore,
+  GraphRelation,
+  GraphEntitySummary,
   HistoryStore,
   MemoryItem,
   AddOptions,
@@ -14,6 +16,9 @@ import type {
   GetAllOptions,
   UserProfile,
   ConversationMessage,
+  LLMConfig,
+  EmbedderConfig,
+  Reranker,
 } from "./interfaces/index.js";
 import { extractMemories } from "./extraction.js";
 import { deduplicate } from "./dedup.js";
@@ -23,6 +28,7 @@ import { SqliteHistoryStore } from "./backends/sqlite-history.js";
 import { KuzuGraphStore } from "./backends/kuzu.js";
 import { OpenAICompatLLM } from "./backends/openai-compat-llm.js";
 import { OpenAICompatEmbedder } from "./backends/openai-compat-embedder.js";
+import { NoopReranker } from "./backends/noop-reranker.js";
 import {
   buildEntityExtractionPrompt,
   parseEntityExtractionResponse,
@@ -63,20 +69,9 @@ export interface ClawMemConfig {
   /** Data directory — all DB files go here */
   dataDir: string;
 
-  llm: {
-    baseURL: string;
-    apiKey?: string;
-    model?: string;
-    temperature?: number;
-    maxTokens?: number;
-  };
+  llm: LLMConfig;
 
-  embedder: {
-    baseURL: string;
-    apiKey?: string;
-    model?: string;
-    dimension?: number;
-  };
+  embedder: EmbedderConfig;
 
   /** Enable graph memory (Kùzu). Default: true */
   enableGraph?: boolean;
@@ -108,6 +103,18 @@ export interface ClawMemConfig {
 
   /** Enable LLM-based query rewriting for short queries (P4-5). Default: false */
   enableQueryRewriting?: boolean;
+
+  /** Optional reranker stage after vector retrieval (default: NoopReranker) */
+  reranker?: Reranker;
+
+  /** Top-k passed to reranker (default: defaultTopK * 2) */
+  rerankerTopK?: number;
+
+  /** Query cache TTL for rewrite+embedding (default: 60000ms) */
+  queryCacheTtlMs?: number;
+
+  /** Query cache max entries (default: 200) */
+  queryCacheMaxEntries?: number;
 
   /** Optional logger for diagnostics */
   logger?: Logger;
@@ -144,6 +151,8 @@ export interface ClawMemSettings {
   customInstructions: string;
   forgettingRules: { fact: number; preference: number; episode: number };
   enableQueryRewriting: boolean;
+  queryCacheTtlMs: number;
+  queryCacheMaxEntries: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -156,10 +165,23 @@ export class Memory {
   private readonly historyStore: HistoryStore;
   private readonly llm: LLM;
   private readonly embedder: Embedder;
+  private readonly reranker: Reranker;
   private readonly config: ClawMemSettings;
   private readonly log: Logger;
+  private readonly rerankerTopK: number | undefined;
+  private readonly searchCache = new Map<string, {
+    effectiveQuery: string;
+    embedding: number[];
+    expiresAt: number;
+  }>();
 
   constructor(config: ClawMemConfig) {
+    if (config.encryption) {
+      throw new Error(
+        "encryption.passphrase is configured, but encryption-at-rest is not implemented yet. Remove the encryption config or use filesystem encryption for now.",
+      );
+    }
+
     // Resolve data directory
     mkdirSync(config.dataDir, { recursive: true });
 
@@ -182,6 +204,8 @@ export class Memory {
         episode: config.forgettingRules?.episode ?? 0,
       },
       enableQueryRewriting: config.enableQueryRewriting ?? false,
+      queryCacheTtlMs: config.queryCacheTtlMs ?? 60_000,
+      queryCacheMaxEntries: config.queryCacheMaxEntries ?? 200,
     };
 
     // Initialize backends
@@ -189,6 +213,8 @@ export class Memory {
     this.embedder =
       config.embedderInstance ??
       new OpenAICompatEmbedder(config.embedder);
+    this.reranker = config.reranker ?? new NoopReranker();
+    this.rerankerTopK = config.rerankerTopK;
 
     this.vectorStore =
       config.vectorStore ??
@@ -424,65 +450,49 @@ export class Memory {
   async search(query: string, options: SearchOptions): Promise<MemoryItem[]> {
     const limit = options.limit ?? this.config.defaultTopK;
     const threshold = options.threshold ?? this.config.defaultThreshold;
+    const fetchLimit = Math.max(limit * 2, 10);
+    const rerankerTopK = this.rerankerTopK ?? fetchLimit;
 
-    // Query rewriting (P4-5) — expand short/vague queries
-    const effectiveQuery = this.config.enableQueryRewriting
-      ? await rewriteQuery(query, this.llm)
-      : query;
+    const { effectiveQuery, queryEmbedding } = await this.resolveSearchContext(
+      query,
+      options.userId,
+    );
 
-    const queryEmbedding = await this.embedder.embed(effectiveQuery);
-    const vectorResults = await this.vectorStore.search(queryEmbedding, limit * 2, {
+    const searchFilters: Record<string, unknown> = {
       userId: options.userId,
       isLatest: true,
-    });
+      ...(options.category !== undefined && { category: options.category }),
+      ...(options.memoryType !== undefined && { memoryType: options.memoryType }),
+      ...(options.fromDate !== undefined && { fromDate: options.fromDate }),
+      ...(options.toDate !== undefined && { toDate: options.toDate }),
+    };
 
-    let results = vectorResults
+    const vectorResults = await this.vectorStore.search(
+      queryEmbedding,
+      fetchLimit,
+      searchFilters,
+    );
+    const rerankedResults = await this.reranker.rerank(
+      effectiveQuery,
+      vectorResults,
+      rerankerTopK,
+    );
+
+    let results = rerankedResults
       .filter((r) => r.score >= threshold)
       .map((r) => this.toMemoryItem(r.id, r.payload, r.score));
 
-    // Category filter
-    if (options.category) {
-      results = results.filter((m) => m.category === options.category);
-    }
-
-    // Memory type filter
-    if (options.memoryType) {
-      results = results.filter((m) => m.memoryType === options.memoryType);
-    }
-
-    // Date range filter
-    if (options.fromDate || options.toDate) {
-      results = results.filter((m) => {
-        const date = m.eventDate ?? m.createdAt;
-        if (options.fromDate && date < options.fromDate) return false;
-        if (options.toDate && date > options.toDate) return false;
-        return true;
-      });
-    }
-
-    // Memory type scoring (P4-3)
-    // - preference: slight boost (+10%)
-    // - episode: decay based on age (max 30% penalty for memories > 30 days old)
-    // - fact: neutral
-    results = results.map((m) => {
-      if (!m.memoryType || !m.score) return m;
-      let multiplier = 1.0;
-      if (m.memoryType === "preference") {
-        multiplier = 1.1;
-      } else if (m.memoryType === "episode") {
-        const ageMs = Date.now() - new Date(m.createdAt).getTime();
-        const ageDays = ageMs / (1000 * 60 * 60 * 24);
-        multiplier = Math.max(0.7, 1.0 - (ageDays / 100) * 0.3);
-      }
-      return { ...m, score: Math.min(1.0, m.score * multiplier) };
-    });
+    // Keep local filter pass for backend compatibility if custom stores ignore filters.
+    results = this.applyPostSearchFilters(results, options);
+    results = this.applyMemoryTypeScoring(results);
 
     // Keyword search blend
     if (options.keywordSearch && this.vectorStore.keywordSearch) {
-      const kwResults = await this.vectorStore.keywordSearch(effectiveQuery, limit, {
-        userId: options.userId,
-        isLatest: true,
-      });
+      const kwResults = await this.vectorStore.keywordSearch(
+        effectiveQuery,
+        limit,
+        searchFilters,
+      );
       const kwMemories = kwResults.map((r) =>
         this.toMemoryItem(r.id, r.payload, r.score * 0.7),
       );
@@ -498,7 +508,7 @@ export class Memory {
       results = Array.from(merged.values());
     }
 
-    return results.sort((a, b) => (b.score ?? 0) - (a.score ?? 0)).slice(0, limit);
+    return this.sortAndLimitResults(results, limit);
   }
 
   // ---------------------------------------------------------------------------
@@ -515,7 +525,12 @@ export class Memory {
     // #23: Push isLatest filter to SQL for efficiency
     const isLatest = options.onlyLatest !== false ? true : undefined;
     const [results] = await this.vectorStore.list(
-      { userId: options.userId, ...(isLatest !== undefined && { isLatest }) },
+      {
+        userId: options.userId,
+        ...(isLatest !== undefined && { isLatest }),
+        ...(options.category !== undefined && { category: options.category }),
+        ...(options.memoryType !== undefined && { memoryType: options.memoryType }),
+      },
       options.limit ?? 1000,
       options.offset ?? 0,
     );
@@ -598,9 +613,92 @@ export class Memory {
   }
 
   /** Get graph relations for a user */
-  async graphRelations(userId: string) {
+  async graphRelations(
+    userId: string,
+    opts: { limit?: number; offset?: number } = {},
+  ): Promise<GraphRelation[]> {
     if (!this.graphStore) return [];
-    return this.graphStore.getAll(userId);
+    const limit = opts.limit ?? 50;
+    const offset = opts.offset ?? 0;
+    const requested = Math.max(limit + offset, limit);
+    const relations = await this.graphStore.getAll(userId, requested, 0);
+    return relations.slice(offset, offset + limit);
+  }
+
+  /** Search graph relationships by entity/query text */
+  async graphSearch(
+    query: string,
+    userId: string,
+    opts: { limit?: number; offset?: number } = {},
+  ): Promise<GraphRelation[]> {
+    if (!this.graphStore) return [];
+    const limit = opts.limit ?? 50;
+    const offset = opts.offset ?? 0;
+    const requested = Math.max(limit + offset, limit);
+    const needle = query.trim().toLowerCase();
+
+    if (!needle) {
+      return this.graphRelations(userId, opts);
+    }
+
+    const neighbors = await this.graphStore.getNeighbors(query, userId);
+    const neighborMatches = neighbors.filter(
+      (r) =>
+        r.sourceName.toLowerCase().includes(needle) ||
+        r.targetName.toLowerCase().includes(needle),
+    );
+    if (neighborMatches.length > 0) {
+      return neighborMatches.slice(offset, offset + limit);
+    }
+
+    const candidates = await this.graphStore.search(
+      query,
+      userId,
+      requested * 2,
+      0,
+    );
+    const matches = candidates.filter(
+      (r) =>
+        r.sourceName.toLowerCase().includes(needle) ||
+        r.targetName.toLowerCase().includes(needle),
+    );
+    return matches.slice(offset, offset + limit);
+  }
+
+  /** List graph entities and relation counts */
+  async graphEntities(
+    userId: string,
+    opts: { query?: string; limit?: number; offset?: number } = {},
+  ): Promise<GraphEntitySummary[]> {
+    if (!this.graphStore) return [];
+    const limit = opts.limit ?? 100;
+    const offset = opts.offset ?? 0;
+
+    if (this.graphStore.listEntities) {
+      return this.graphStore.listEntities(userId, limit, offset, opts.query);
+    }
+
+    const relations = await this.graphStore.getAll(userId);
+    const counts = new Map<string, number>();
+    for (const rel of relations) {
+      counts.set(rel.sourceName, (counts.get(rel.sourceName) ?? 0) + 1);
+      counts.set(rel.targetName, (counts.get(rel.targetName) ?? 0) + 1);
+    }
+
+    const needle = opts.query?.trim().toLowerCase();
+    const entities = Array.from(counts.entries())
+      .map(([name, relationCount]) => ({ name, relationCount }))
+      .filter((e) =>
+        needle ? e.name.toLowerCase().includes(needle) : true,
+      )
+      .sort((a, b) => {
+        if (b.relationCount !== a.relationCount) {
+          return b.relationCount - a.relationCount;
+        }
+        return a.name.localeCompare(b.name);
+      });
+
+    return entities.slice(offset, offset + limit);
   }
 
   // ---------------------------------------------------------------------------
@@ -823,6 +921,7 @@ export class Memory {
   // ---------------------------------------------------------------------------
 
   close(): void {
+    this.searchCache.clear();
     if ("close" in this.vectorStore && typeof (this.vectorStore as { close: () => void }).close === "function") {
       (this.vectorStore as { close: () => void }).close();
     }
@@ -837,6 +936,115 @@ export class Memory {
   // ---------------------------------------------------------------------------
   // Helpers
   // ---------------------------------------------------------------------------
+
+  private async resolveSearchContext(
+    query: string,
+    userId: string,
+  ): Promise<{ effectiveQuery: string; queryEmbedding: number[] }> {
+    const cacheKey = this.buildSearchCacheKey(query, userId);
+    const cached = this.getCachedSearchContext(cacheKey);
+    if (cached) {
+      return { effectiveQuery: cached.effectiveQuery, queryEmbedding: cached.embedding };
+    }
+
+    const effectiveQuery = this.config.enableQueryRewriting
+      ? await rewriteQuery(query, this.llm)
+      : query;
+    const queryEmbedding = await this.embedder.embed(effectiveQuery);
+
+    this.setCachedSearchContext(cacheKey, {
+      effectiveQuery,
+      embedding: queryEmbedding,
+      expiresAt: Date.now() + this.config.queryCacheTtlMs,
+    });
+
+    return { effectiveQuery, queryEmbedding };
+  }
+
+  private buildSearchCacheKey(query: string, userId: string): string {
+    return JSON.stringify({
+      userId,
+      query,
+      rewrite: this.config.enableQueryRewriting,
+    });
+  }
+
+  private getCachedSearchContext(
+    key: string,
+  ): { effectiveQuery: string; embedding: number[]; expiresAt: number } | null {
+    const entry = this.searchCache.get(key);
+    if (!entry) return null;
+    if (entry.expiresAt <= Date.now()) {
+      this.searchCache.delete(key);
+      return null;
+    }
+    // Touch for LRU behavior.
+    this.searchCache.delete(key);
+    this.searchCache.set(key, entry);
+    return entry;
+  }
+
+  private setCachedSearchContext(
+    key: string,
+    value: { effectiveQuery: string; embedding: number[]; expiresAt: number },
+  ): void {
+    if (!this.searchCache.has(key) && this.searchCache.size >= this.config.queryCacheMaxEntries) {
+      const oldest = this.searchCache.keys().next().value;
+      if (oldest !== undefined) {
+        this.searchCache.delete(oldest);
+      }
+    }
+    this.searchCache.set(key, value);
+  }
+
+  private applyPostSearchFilters(
+    results: MemoryItem[],
+    options: SearchOptions,
+  ): MemoryItem[] {
+    let filtered = results;
+
+    if (options.category) {
+      filtered = filtered.filter((m) => m.category === options.category);
+    }
+    if (options.memoryType) {
+      filtered = filtered.filter((m) => m.memoryType === options.memoryType);
+    }
+    if (options.fromDate || options.toDate) {
+      filtered = filtered.filter((m) => {
+        const date = m.eventDate ?? m.createdAt;
+        if (options.fromDate && date < options.fromDate) return false;
+        if (options.toDate && date > options.toDate) return false;
+        return true;
+      });
+    }
+
+    return filtered;
+  }
+
+  private applyMemoryTypeScoring(results: MemoryItem[]): MemoryItem[] {
+    // P4-3:
+    // - preference: slight boost (+10%)
+    // - episode: decay based on age (max 30% penalty for memories > 30 days old)
+    // - fact: neutral
+    return results.map((m) => {
+      if (!m.memoryType || m.score === undefined) return m;
+      let multiplier = 1.0;
+      if (m.memoryType === "preference") {
+        multiplier = 1.1;
+      } else if (m.memoryType === "episode") {
+        const ageMs = Date.now() - new Date(m.createdAt).getTime();
+        const ageDays = ageMs / (1000 * 60 * 60 * 24);
+        multiplier = Math.max(0.7, 1.0 - (ageDays / 100) * 0.3);
+      }
+      return { ...m, score: Math.min(1.0, m.score * multiplier) };
+    });
+  }
+
+  private sortAndLimitResults(results: MemoryItem[], limit: number): MemoryItem[] {
+    return results
+      .sort((a, b) => (b.score ?? 0) - (a.score ?? 0))
+      .slice(0, limit);
+  }
 
   private memoryToPayload(mem: MemoryItem): Record<string, unknown> {
     return {

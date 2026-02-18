@@ -3,6 +3,8 @@ import { EmbedderError } from "../errors.js";
 
 const DEFAULT_EMBEDDER_TIMEOUT_MS = 30_000;
 const DEFAULT_BATCH_SIZE = 10;
+const DEFAULT_EMBEDDER_CONCURRENCY = 2;
+const MAX_EMBEDDER_CONCURRENCY = 8;
 
 /**
  * OpenAI-compatible embedder adapter.
@@ -20,6 +22,7 @@ export class OpenAICompatEmbedder implements Embedder {
   private readonly model: string;
   private readonly timeoutMs: number;
   private readonly batchSize: number;
+  private readonly concurrency: number;
 
   constructor(config: EmbedderConfig) {
     this.baseURL = config.baseURL.replace(/\/$/, "");
@@ -28,6 +31,10 @@ export class OpenAICompatEmbedder implements Embedder {
     this.dimension = config.dimension ?? 768;
     this.timeoutMs = config.timeoutMs ?? DEFAULT_EMBEDDER_TIMEOUT_MS;
     this.batchSize = config.batchSize ?? DEFAULT_BATCH_SIZE;
+    this.concurrency = Math.min(
+      Math.max(config.concurrency ?? DEFAULT_EMBEDDER_CONCURRENCY, 1),
+      MAX_EMBEDDER_CONCURRENCY,
+    );
   }
 
   async embed(text: string): Promise<number[]> {
@@ -41,11 +48,33 @@ export class OpenAICompatEmbedder implements Embedder {
     if (texts.length === 0) return [];
 
     // #47: Chunk into batchSize groups
-    const allResults: number[][] = [];
+    const chunks: string[][] = [];
     for (let i = 0; i < texts.length; i += this.batchSize) {
-      const chunk = texts.slice(i, i + this.batchSize);
-      const results = await this.fetchEmbeddings(chunk);
-      allResults.push(...results);
+      chunks.push(texts.slice(i, i + this.batchSize));
+    }
+    if (chunks.length === 0) return [];
+
+    // #performance-3A: bounded concurrency with deterministic output order
+    const outputs: number[][][] = new Array(chunks.length);
+    let nextIndex = 0;
+    const workerCount = Math.min(this.concurrency, chunks.length);
+
+    await Promise.all(
+      Array.from({ length: workerCount }, async () => {
+        // eslint-disable-next-line no-constant-condition
+        while (true) {
+          const idx = nextIndex++;
+          if (idx >= chunks.length) return;
+          outputs[idx] = await this.fetchEmbeddings(chunks[idx]!);
+        }
+      }),
+    );
+
+    const allResults: number[][] = [];
+    for (const chunkResult of outputs) {
+      if (chunkResult) {
+        allResults.push(...chunkResult);
+      }
     }
     return allResults;
   }

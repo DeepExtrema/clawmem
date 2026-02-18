@@ -174,6 +174,8 @@ export interface EmbedderConfig {
   timeoutMs?: number;
   /** Max texts per batch request (default: 10) */
   batchSize?: number;
+  /** Max concurrent embedding requests across chunks (default: 2) */
+  concurrency?: number;
 }
 
 export interface Embedder {
@@ -231,6 +233,11 @@ export interface GraphRelation {
   createdAt: string;
 }
 
+export interface GraphEntitySummary {
+  name: string;
+  relationCount: number;
+}
+
 export interface GraphStoreConfig {
   dbPath: string;
   [key: string]: unknown;
@@ -249,10 +256,19 @@ export interface GraphStore {
     query: string,
     userId: string,
     limit?: number,
+    offset?: number,
   ): Promise<GraphRelation[]>;
 
   /** Get all relationships for a user */
-  getAll(userId: string): Promise<GraphRelation[]>;
+  getAll(userId: string, limit?: number, offset?: number): Promise<GraphRelation[]>;
+
+  /** List entities for a user, optionally filtered by name */
+  listEntities?(
+    userId: string,
+    limit?: number,
+    offset?: number,
+    query?: string,
+  ): Promise<GraphEntitySummary[]>;
 
   /** Get neighbors of a named entity */
   getNeighbors(entityName: string, userId: string): Promise<GraphRelation[]>;

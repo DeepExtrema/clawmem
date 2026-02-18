@@ -2,22 +2,41 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { tmpdir } from "os";
 import { join } from "path";
-import { mkdirSync, rmSync, readFileSync, existsSync, writeFileSync } from "fs";
+import { mkdirSync, rmSync, readFileSync, existsSync } from "fs";
 import { randomUUID } from "crypto";
-import { loadConfig, saveConfig, DEFAULT_CONFIG } from "../src/config.js";
+import {
+  loadConfig,
+  saveConfig,
+  DEFAULT_CONFIG,
+  CONFIG_PATH,
+} from "../src/config.js";
 import type { CliConfig } from "../src/config.js";
 
 describe("clawmem CLI — config", () => {
   let tmpDir: string;
-  let origConfigPath: string;
+  let previousConfig: string | null;
 
   beforeEach(() => {
     tmpDir = join(tmpdir(), `clawmem-cli-test-${randomUUID()}`);
     mkdirSync(tmpDir, { recursive: true });
+    previousConfig = existsSync(CONFIG_PATH)
+      ? readFileSync(CONFIG_PATH, "utf-8")
+      : null;
+    // Ensure deterministic defaults for each test.
+    rmSync(CONFIG_PATH, { force: true });
   });
 
   afterEach(() => {
-    try { rmSync(tmpDir, { recursive: true }); } catch { /* ok */ }
+    try {
+      if (previousConfig !== null) {
+        saveConfig(JSON.parse(previousConfig) as CliConfig);
+      } else {
+        rmSync(CONFIG_PATH, { force: true });
+      }
+      rmSync(tmpDir, { recursive: true, force: true });
+    } catch {
+      // best-effort cleanup
+    }
   });
 
   it("loadConfig returns defaults when no config file exists", () => {
@@ -32,13 +51,10 @@ describe("clawmem CLI — config", () => {
       dataDir: tmpDir,
       userId: "test-user",
     };
-    const configPath = join(tmpDir, "config.json");
-    writeFileSync(configPath, JSON.stringify(cfg, null, 2));
-
-    const raw = readFileSync(configPath, "utf-8");
-    const parsed = JSON.parse(raw);
-    expect(parsed.userId).toBe("test-user");
-    expect(parsed.dataDir).toBe(tmpDir);
+    saveConfig(cfg);
+    const loaded = loadConfig();
+    expect(loaded.userId).toBe("test-user");
+    expect(loaded.dataDir).toBe(tmpDir);
   });
 
   it("DEFAULT_CONFIG has expected shape", () => {

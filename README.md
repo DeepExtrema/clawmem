@@ -146,6 +146,8 @@ packages/cli               clawmem
 git clone https://github.com/DeepExtrema/clawmem
 cd clawmem
 pnpm install
+# If any package.json/workspace dependency metadata changes:
+# rerun pnpm install and commit pnpm-lock.yaml in the same PR
 pnpm build
 pnpm test          # 130+ tests across core, CLI, and plugin
 ```
