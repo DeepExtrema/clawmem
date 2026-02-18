@@ -17,6 +17,7 @@ import type {
 } from "./interfaces/index.js";
 import { extractMemories } from "./extraction.js";
 import { deduplicate } from "./dedup.js";
+import { rewriteQuery } from "./query-rewriting.js";
 import { SqliteVecStore } from "./backends/sqlite-vec.js";
 import { SqliteHistoryStore } from "./backends/sqlite-history.js";
 import { KuzuGraphStore } from "./backends/kuzu.js";
@@ -70,6 +71,19 @@ export interface ClawMemConfig {
   /** Custom extraction instructions */
   customInstructions?: string;
 
+  /**
+   * Automatic forgetting rules (retention days per memory type).
+   * 0 = never expire. Default: all 0 (never expire).
+   */
+  forgettingRules?: {
+    fact?: number;
+    preference?: number;
+    episode?: number;
+  };
+
+  /** Enable LLM-based query rewriting for short queries (P4-5). Default: false */
+  enableQueryRewriting?: boolean;
+
   // Advanced: override backends
   vectorStore?: VectorStore;
   graphStore?: GraphStore;
@@ -105,6 +119,8 @@ export class Memory {
       defaultThreshold: config.defaultThreshold ?? 0.5,
       maxMemories: config.maxMemories ?? 10000,
       customInstructions: config.customInstructions ?? "",
+      forgettingRules: config.forgettingRules ?? {},
+      enableQueryRewriting: config.enableQueryRewriting ?? false,
       vectorStore: config.vectorStore!,
       graphStore: config.graphStore!,
       historyStore: config.historyStore!,
@@ -322,7 +338,12 @@ export class Memory {
     const limit = options.limit ?? this.config.defaultTopK;
     const threshold = options.threshold ?? this.config.defaultThreshold;
 
-    const queryEmbedding = await this.embedder.embed(query);
+    // Query rewriting (P4-5) — expand short/vague queries
+    const effectiveQuery = this.config.enableQueryRewriting
+      ? await rewriteQuery(query, this.llm)
+      : query;
+
+    const queryEmbedding = await this.embedder.embed(effectiveQuery);
     const vectorResults = await this.vectorStore.search(queryEmbedding, limit * 2, {
       userId: options.userId,
     });
@@ -354,9 +375,26 @@ export class Memory {
       });
     }
 
+    // Memory type scoring (P4-3)
+    // - preference: slight boost (+10%)
+    // - episode: decay based on age (max 30% penalty for memories > 30 days old)
+    // - fact: neutral
+    results = results.map((m) => {
+      if (!m.memoryType || !m.score) return m;
+      let multiplier = 1.0;
+      if (m.memoryType === "preference") {
+        multiplier = 1.1;
+      } else if (m.memoryType === "episode") {
+        const ageMs = Date.now() - new Date(m.createdAt).getTime();
+        const ageDays = ageMs / (1000 * 60 * 60 * 24);
+        multiplier = Math.max(0.7, 1.0 - (ageDays / 100) * 0.3);
+      }
+      return { ...m, score: Math.min(1.0, m.score * multiplier) };
+    });
+
     // Keyword search blend
     if (options.keywordSearch && this.vectorStore.keywordSearch) {
-      const kwResults = await this.vectorStore.keywordSearch(query, limit, {
+      const kwResults = await this.vectorStore.keywordSearch(effectiveQuery, limit, {
         userId: options.userId,
       });
       const kwMemories = kwResults.map((r) =>
@@ -498,6 +536,204 @@ export class Memory {
   async graphRelations(userId: string) {
     if (!this.graphStore) return [];
     return this.graphStore.getAll(userId);
+  }
+
+  // ---------------------------------------------------------------------------
+  // retentionScanner() — P4-2: Automatic forgetting
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Scan memories for expired items based on forgettingRules config.
+   * Returns a list of expired memories. If `autoDelete` is true, deletes them.
+   *
+   * Rule: if `forgettingRules.episode = 30`, episodes older than 30 days expire.
+   * Rule: eventDate is used if present, otherwise createdAt.
+   */
+  async retentionScanner(
+    userId: string,
+    opts: { autoDelete?: boolean } = {},
+  ): Promise<{ expired: MemoryItem[]; deleted: number }> {
+    const rules = this.config.forgettingRules;
+    if (!rules || Object.keys(rules).length === 0) {
+      return { expired: [], deleted: 0 };
+    }
+
+    const allMemories = await this.getAll({ userId, onlyLatest: true });
+    const now = Date.now();
+    const expired: MemoryItem[] = [];
+
+    for (const mem of allMemories) {
+      const type = mem.memoryType ?? "fact";
+      const retentionDays = (rules as Record<string, number>)[type] ?? 0;
+      if (retentionDays <= 0) continue;
+
+      const referenceDate = mem.eventDate ?? mem.createdAt;
+      const ageMs = now - new Date(referenceDate).getTime();
+      const ageDays = ageMs / (1000 * 60 * 60 * 24);
+
+      if (ageDays > retentionDays) {
+        expired.push(mem);
+      }
+    }
+
+    let deleted = 0;
+    if (opts.autoDelete && expired.length > 0) {
+      for (const mem of expired) {
+        await this.delete(mem.id);
+        deleted++;
+      }
+    }
+
+    return { expired, deleted };
+  }
+
+  // ---------------------------------------------------------------------------
+  // exportMarkdown() / importMarkdown() — P3-6: Markdown sync
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Export memories to markdown files organized by date.
+   * Creates one file per day: `outputDir/YYYY-MM-DD.md`
+   *
+   * Returns the paths of files written.
+   */
+  async exportMarkdown(
+    userId: string,
+    outputDir: string,
+    opts: { onlyLatest?: boolean } = {},
+  ): Promise<string[]> {
+    const { mkdirSync, writeFileSync } = await import("fs");
+    const { join: pathJoin } = await import("path");
+
+    mkdirSync(outputDir, { recursive: true });
+
+    const memories = await this.getAll({
+      userId,
+      onlyLatest: opts.onlyLatest ?? true,
+      limit: 100000,
+    });
+
+    // Group by date
+    const byDate = new Map<string, MemoryItem[]>();
+    for (const mem of memories) {
+      const dateStr = (mem.eventDate ?? mem.createdAt).slice(0, 10);
+      if (!byDate.has(dateStr)) byDate.set(dateStr, []);
+      byDate.get(dateStr)!.push(mem);
+    }
+
+    const written: string[] = [];
+
+    for (const [date, mems] of byDate) {
+      const lines: string[] = [
+        `# ClawMem Export — ${date}`,
+        `> User: ${userId} | Exported: ${new Date().toISOString()}`,
+        "",
+      ];
+
+      // Group by category within the day
+      const byCategory = new Map<string, MemoryItem[]>();
+      for (const m of mems) {
+        const cat = m.category ?? "other";
+        if (!byCategory.has(cat)) byCategory.set(cat, []);
+        byCategory.get(cat)!.push(m);
+      }
+
+      for (const [cat, catMems] of byCategory) {
+        lines.push(`## ${cat}`);
+        lines.push("");
+        for (const m of catMems) {
+          const type = m.memoryType ? ` *(${m.memoryType})*` : "";
+          const id = `<!-- id:${m.id} -->`;
+          lines.push(`- ${m.memory}${type} ${id}`);
+        }
+        lines.push("");
+      }
+
+      const filePath = pathJoin(outputDir, `${date}.md`);
+      writeFileSync(filePath, lines.join("\n"));
+      written.push(filePath);
+    }
+
+    // Also write a MEMORY.md summary (latest facts)
+    const summaryPath = pathJoin(outputDir, "MEMORY.md");
+    const summary = [
+      `# Memory — ${userId}`,
+      `> Last synced: ${new Date().toISOString()}`,
+      "",
+    ];
+    const profile = await this.profile(userId);
+    if (profile.static.identity.length > 0) {
+      summary.push("## Identity");
+      for (const m of profile.static.identity) summary.push(`- ${m.memory}`);
+      summary.push("");
+    }
+    if (profile.static.preferences.length > 0) {
+      summary.push("## Preferences");
+      for (const m of profile.static.preferences) summary.push(`- ${m.memory}`);
+      summary.push("");
+    }
+    if (profile.static.technical.length > 0) {
+      summary.push("## Technical");
+      for (const m of profile.static.technical) summary.push(`- ${m.memory}`);
+      summary.push("");
+    }
+    if (profile.dynamic.goals.length > 0) {
+      summary.push("## Goals");
+      for (const m of profile.dynamic.goals) summary.push(`- ${m.memory}`);
+      summary.push("");
+    }
+    if (profile.dynamic.projects.length > 0) {
+      summary.push("## Projects");
+      for (const m of profile.dynamic.projects) summary.push(`- ${m.memory}`);
+      summary.push("");
+    }
+    writeFileSync(summaryPath, summary.join("\n"));
+    written.push(summaryPath);
+
+    return written;
+  }
+
+  /**
+   * Import memories from a markdown file.
+   * Treats each bullet point `- text` as a memory to add.
+   * Uses LLM extraction (same as `add()`).
+   */
+  async importMarkdown(
+    filePath: string,
+    userId: string,
+    opts: { customInstructions?: string } = {},
+  ): Promise<{ added: number; updated: number; skipped: number }> {
+    const { readFileSync } = await import("fs");
+    const content = readFileSync(filePath, "utf-8");
+
+    // Extract bullet points
+    const bullets = content
+      .split("\n")
+      .filter((line) => line.match(/^[-*]\s+(.+)/) && !line.includes("<!-- id:"))
+      .map((line) => line.replace(/^[-*]\s+/, "").replace(/\s*\*\(.*?\)\*\s*$/, "").trim())
+      .filter((line) => line.length > 5);
+
+    if (bullets.length === 0) {
+      return { added: 0, updated: 0, skipped: 0 };
+    }
+
+    // Batch into groups of 10 and add
+    let totalAdded = 0, totalUpdated = 0, totalSkipped = 0;
+    const batchSize = 10;
+
+    for (let i = 0; i < bullets.length; i += batchSize) {
+      const batch = bullets.slice(i, i + batchSize);
+      const messages: ConversationMessage[] = batch.map((b) => ({ role: "user" as const, content: b }));
+      const result = await this.add(messages, {
+        userId,
+        ...(opts.customInstructions !== undefined && { customInstructions: opts.customInstructions }),
+      });
+      totalAdded += result.added.length;
+      totalUpdated += result.updated.length;
+      totalSkipped += result.deduplicated;
+    }
+
+    return { added: totalAdded, updated: totalUpdated, skipped: totalSkipped };
   }
 
   // ---------------------------------------------------------------------------

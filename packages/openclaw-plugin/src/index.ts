@@ -476,6 +476,26 @@ const clawmemPlugin = {
             const profile = await mem.profile(resolveUser(opts.user));
             console.log(buildProfileSummary(profile));
           });
+
+        cmd
+          .command("export")
+          .description("Export memories to markdown files")
+          .option("--user <id>", "User ID")
+          .option("--output <dir>", "Output directory", `${dataDir}/export`)
+          .action(async (opts: { user?: string; output: string }) => {
+            const written = await mem.exportMarkdown(resolveUser(opts.user), opts.output);
+            console.log(`✅ Exported ${written.length} file(s) to ${opts.output}`);
+            for (const f of written) console.log(`   ${f}`);
+          });
+
+        cmd
+          .command("import <file>")
+          .description("Import memories from a markdown file")
+          .option("--user <id>", "User ID")
+          .action(async (file: string, opts: { user?: string }) => {
+            const result = await mem.importMarkdown(file, resolveUser(opts.user));
+            console.log(`✅ Import: +${result.added} added, ${result.updated} updated, ${result.skipped} skipped`);
+          });
       },
       { commands: ["clawmem"] },
     );

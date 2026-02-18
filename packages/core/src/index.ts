@@ -45,6 +45,13 @@ export { OpenAICompatEmbedder } from "./backends/openai-compat-embedder.js";
 // Utilities
 export { hashContent, cosineSimilarity, now, parseDate } from "./utils/index.js";
 
+// Sleep mode (nightly analysis)
+export { SleepMode } from "./sleep.js";
+export type { SleepModeConfig, SleepDigest, ConversationLogEntry } from "./sleep.js";
+
+// Query rewriting
+export { rewriteQuery, buildQueryRewritePrompt } from "./query-rewriting.js";
+
 // Prompts (for customization)
 export {
   buildExtractionPrompt,

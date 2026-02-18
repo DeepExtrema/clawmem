@@ -8,6 +8,9 @@ import { registerProfile } from "./commands/profile.js";
 import { registerList } from "./commands/list.js";
 import { registerHistory } from "./commands/history.js";
 import { registerDoctor } from "./commands/doctor.js";
+import { registerExport, registerImport } from "./commands/export-import.js";
+import { registerRetention } from "./commands/retention.js";
+import { registerSleep } from "./commands/sleep.js";
 
 const program = new Command();
 
@@ -26,5 +29,9 @@ registerProfile(program);
 registerList(program);
 registerHistory(program);
 registerDoctor(program);
+registerExport(program);
+registerImport(program);
+registerRetention(program);
+registerSleep(program);
 
 program.parse();
