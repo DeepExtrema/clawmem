@@ -1,8 +1,9 @@
 import { describe, it, expect } from "vitest";
 
-describe("@clawmem/openclaw — placeholder", () => {
-  it("package loads", async () => {
+describe("@clawmem/openclaw", () => {
+  it("exports a plugin with a setup function", async () => {
     const mod = await import("../src/index.js");
-    expect(mod.version).toBe("0.1.0");
+    expect(mod.default).toBeDefined();
+    expect(typeof mod.default.setup).toBe("function");
   });
 });

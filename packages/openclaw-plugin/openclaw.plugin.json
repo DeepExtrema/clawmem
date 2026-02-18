@@ -1,0 +1,97 @@
+{
+  "id": "clawmem",
+  "kind": "memory",
+  "uiHints": {
+    "dataDir": {
+      "label": "Data Directory",
+      "placeholder": "~/.clawmem",
+      "help": "Where ClawMem stores the SQLite/Kùzu databases. Defaults to ~/.clawmem"
+    },
+    "userId": {
+      "label": "Default User ID",
+      "placeholder": "default",
+      "help": "Default user ID for scoping memories in single-user setups"
+    },
+    "autoRecall": {
+      "label": "Auto-Recall",
+      "help": "Inject relevant memories into context before each agent turn"
+    },
+    "autoCapture": {
+      "label": "Auto-Capture",
+      "help": "Extract and store facts from conversations after each agent turn"
+    },
+    "skipGroupChats": {
+      "label": "Skip Group Chats",
+      "help": "Skip memory capture/recall in group chats (recommended: true)"
+    },
+    "searchThreshold": {
+      "label": "Search Threshold",
+      "placeholder": "0.3",
+      "help": "Minimum similarity score for recall (0-1). Lower = more results."
+    },
+    "topK": {
+      "label": "Top K Results",
+      "placeholder": "5",
+      "help": "Maximum memories injected per recall"
+    },
+    "enableGraph": {
+      "label": "Enable Graph Memory",
+      "help": "Enable Kùzu embedded graph memory (entity relationships, UPDATE chains)"
+    },
+    "llm": {
+      "label": "LLM Endpoint",
+      "advanced": true,
+      "help": "OpenAI-compatible LLM for extraction. Defaults to http://127.0.0.1:8080/v1"
+    },
+    "embedder": {
+      "label": "Embedder Endpoint",
+      "advanced": true,
+      "help": "OpenAI-compatible embedder. Defaults to http://127.0.0.1:8082/v1"
+    },
+    "customInstructions": {
+      "label": "Custom Instructions",
+      "placeholder": "Only store factual preferences, skip small talk...",
+      "help": "Extra instructions for the memory extraction LLM"
+    },
+    "identityMapPath": {
+      "label": "Identity Map Path",
+      "advanced": true,
+      "placeholder": "config/identity-map.json",
+      "help": "Path to JSON file mapping channel-specific IDs to canonical user IDs"
+    }
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [],
+    "properties": {
+      "dataDir": { "type": "string" },
+      "userId": { "type": "string" },
+      "autoRecall": { "type": "boolean" },
+      "autoCapture": { "type": "boolean" },
+      "skipGroupChats": { "type": "boolean" },
+      "searchThreshold": { "type": "number" },
+      "topK": { "type": "number" },
+      "enableGraph": { "type": "boolean" },
+      "customInstructions": { "type": "string" },
+      "identityMapPath": { "type": "string" },
+      "llm": {
+        "type": "object",
+        "properties": {
+          "baseURL": { "type": "string" },
+          "model": { "type": "string" },
+          "apiKey": { "type": "string" }
+        }
+      },
+      "embedder": {
+        "type": "object",
+        "properties": {
+          "baseURL": { "type": "string" },
+          "model": { "type": "string" },
+          "apiKey": { "type": "string" },
+          "dimension": { "type": "number" }
+        }
+      }
+    }
+  }
+}
