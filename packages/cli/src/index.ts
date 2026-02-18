@@ -17,7 +17,7 @@ const program = new Command();
 program
   .name("clawmem")
   .description(
-    "Local-first memory engine — durable, auditable, reversible.\nDocs: https://github.com/tekron/clawmem",
+    "Local-first memory engine — durable, auditable, reversible.\nDocs: https://github.com/DeepExtrema/clawmem",
   )
   .version("0.1.0");
 

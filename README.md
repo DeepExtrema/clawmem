@@ -4,7 +4,7 @@
 
 **"Markdown stays the source of truth, but recall is persistent, searchable, and graph-aware."**
 
-[![CI](https://github.com/tekron/clawmem/actions/workflows/ci.yml/badge.svg)](https://github.com/tekron/clawmem/actions/workflows/ci.yml)
+[![CI](https://github.com/DeepExtrema/clawmem/actions/workflows/ci.yml/badge.svg)](https://github.com/DeepExtrema/clawmem/actions/workflows/ci.yml)
 [![npm @clawmem/core](https://img.shields.io/npm/v/@clawmem/core)](https://www.npmjs.com/package/@clawmem/core)
 [![npm @clawmem/openclaw](https://img.shields.io/npm/v/@clawmem/openclaw)](https://www.npmjs.com/package/@clawmem/openclaw)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
@@ -142,7 +142,7 @@ packages/cli               clawmem
 
 ```bash
 # Prerequisites: Node 20+, pnpm 9+
-git clone https://github.com/tekron/clawmem
+git clone https://github.com/DeepExtrema/clawmem
 cd clawmem
 pnpm install
 pnpm build
@@ -155,4 +155,4 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidelines.
 
 ## License
 
-[Apache 2.0](LICENSE) © 2026 tekron
+[Apache 2.0](LICENSE) © 2026 DeepExtrema

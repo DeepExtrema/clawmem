@@ -12,7 +12,7 @@
 
 ```bash
 # One-command install
-curl -fsSL https://raw.githubusercontent.com/tekron/clawmem/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/DeepExtrema/clawmem/main/install.sh | bash
 
 # Or manually
 npm install -g clawmem

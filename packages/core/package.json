@@ -4,7 +4,7 @@
   "description": "Local-first memory engine — vector + graph store, extraction, deduplication, profiles.",
   "type": "module",
   "license": "Apache-2.0",
-  "author": "tekron",
+  "author": "DeepExtrema",
   "keywords": ["memory", "ai", "vector-store", "graph", "kuzu", "local-first", "llm"],
   "exports": {
     ".": {

@@ -4,7 +4,7 @@
   "description": "ClawMem CLI — local-first AI memory. Works standalone or with OpenClaw.",
   "type": "module",
   "license": "Apache-2.0",
-  "author": "tekron",
+  "author": "DeepExtrema",
   "keywords": ["clawmem", "memory", "ai", "cli", "local-first", "vector-store", "graph"],
   "bin": {
     "clawmem": "./dist/index.js"

@@ -86,6 +86,6 @@ Always tell the user:
 
 ## Links
 
-- GitHub: https://github.com/tekron/clawmem
-- Docs: https://github.com/tekron/clawmem/tree/main/docs
-- Issues: https://github.com/tekron/clawmem/issues
+- GitHub: https://github.com/DeepExtrema/clawmem
+- Docs: https://github.com/DeepExtrema/clawmem/tree/main/docs
+- Issues: https://github.com/DeepExtrema/clawmem/issues

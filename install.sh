@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ClawMem — One-command install script
-# Usage: curl -fsSL https://raw.githubusercontent.com/tekron/clawmem/main/install.sh | bash
+# Usage: curl -fsSL https://raw.githubusercontent.com/DeepExtrema/clawmem/main/install.sh | bash
 #    or: bash install.sh [--no-openclaw] [--data-dir DIR] [--llm-url URL] [--embed-url URL]
 
 set -euo pipefail
@@ -99,4 +99,4 @@ echo "    clawmem search 'programming language'"
 echo "    clawmem profile"
 echo "    clawmem doctor"
 echo ""
-echo "  Docs: https://github.com/tekron/clawmem"
+echo "  Docs: https://github.com/DeepExtrema/clawmem"

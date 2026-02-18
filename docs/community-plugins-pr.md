@@ -2,7 +2,7 @@
 
 **Plugin name:** ClawMem  
 **npm:** [`@clawmem/openclaw`](https://www.npmjs.com/package/@clawmem/openclaw)  
-**GitHub:** [tekron/clawmem](https://github.com/tekron/clawmem)  
+**GitHub:** [DeepExtrema/clawmem](https://github.com/DeepExtrema/clawmem)  
 **License:** Apache 2.0
 
 ## What it is
@@ -53,8 +53,8 @@ openclaw plugins install @clawmem/openclaw
 
 ## Links
 
-- Quickstart: https://github.com/tekron/clawmem/blob/main/docs/quickstart.md
-- Config reference: https://github.com/tekron/clawmem/blob/main/docs/config-reference.md
-- Architecture: https://github.com/tekron/clawmem/blob/main/docs/architecture.md
-- Security model: https://github.com/tekron/clawmem/blob/main/THREAT-MODEL.md
-- Issues: https://github.com/tekron/clawmem/issues
+- Quickstart: https://github.com/DeepExtrema/clawmem/blob/main/docs/quickstart.md
+- Config reference: https://github.com/DeepExtrema/clawmem/blob/main/docs/config-reference.md
+- Architecture: https://github.com/DeepExtrema/clawmem/blob/main/docs/architecture.md
+- Security model: https://github.com/DeepExtrema/clawmem/blob/main/THREAT-MODEL.md
+- Issues: https://github.com/DeepExtrema/clawmem/issues

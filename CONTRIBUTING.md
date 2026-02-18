@@ -10,7 +10,7 @@ node >= 20
 pnpm >= 9
 
 # Clone and install
-git clone https://github.com/tekron/clawmem
+git clone https://github.com/DeepExtrema/clawmem
 cd clawmem
 pnpm install
 

@@ -10,7 +10,7 @@
 
 **Please do not open a public GitHub issue for security vulnerabilities.**
 
-Report security issues by emailing the maintainer directly or opening a [GitHub Security Advisory](https://github.com/tekron/clawmem/security/advisories/new).
+Report security issues by emailing the maintainer directly or opening a [GitHub Security Advisory](https://github.com/DeepExtrema/clawmem/security/advisories/new).
 
 Include:
 - Description of the vulnerability

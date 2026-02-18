@@ -4,7 +4,7 @@
   "description": "ClawMem memory-slot plugin for OpenClaw — local-first, auditable, reversible.",
   "type": "module",
   "license": "Apache-2.0",
-  "author": "tekron",
+  "author": "DeepExtrema",
   "keywords": ["openclaw", "plugin", "memory", "clawmem", "local-first", "long-term-memory"],
   "exports": {
     ".": {
