@@ -112,6 +112,17 @@ export interface ClawMemConfig {
   /** Optional logger for diagnostics */
   logger?: Logger;
 
+  /**
+   * Encryption at rest (future).
+   * When set, SQLite databases use SQLCipher with this passphrase.
+   * Requires `better-sqlite3` compiled with SQLCipher support.
+   * See docs/encryption.md for setup instructions.
+   */
+  encryption?: {
+    /** Passphrase for SQLCipher encryption */
+    passphrase: string;
+  };
+
   // Advanced: override backends
   vectorStore?: VectorStore;
   graphStore?: GraphStore;

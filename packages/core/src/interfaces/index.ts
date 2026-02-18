@@ -317,6 +317,33 @@ export interface UserProfile {
 }
 
 // ---------------------------------------------------------------------------
+// Reranker interface (optional cross-encoder reranking)
+// ---------------------------------------------------------------------------
+
+export interface RerankerConfig {
+  /** Endpoint URL for the reranker service */
+  baseURL: string;
+  /** Model name (e.g. "cross-encoder/ms-marco-MiniLM-L-6-v2") */
+  model?: string;
+  /** API key if required */
+  apiKey?: string;
+  /** Maximum number of results to return after reranking */
+  topK?: number;
+}
+
+export interface Reranker {
+  /**
+   * Rerank search results by relevance to the query.
+   * Returns items sorted by relevance score (highest first).
+   */
+  rerank(
+    query: string,
+    items: VectorStoreResult[],
+    topK?: number,
+  ): Promise<VectorStoreResult[]>;
+}
+
+// ---------------------------------------------------------------------------
 // Conversation message (input to add())
 // ---------------------------------------------------------------------------
 

@@ -34,6 +34,8 @@ export type {
   Entity,
   HistoryStore,
   HistoryEntry,
+  Reranker,
+  RerankerConfig,
 } from "./interfaces/index.js";
 
 export { MEMORY_CATEGORIES } from "./interfaces/index.js";
@@ -44,6 +46,9 @@ export { KuzuGraphStore } from "./backends/kuzu.js";
 export { SqliteHistoryStore } from "./backends/sqlite-history.js";
 export { OpenAICompatLLM } from "./backends/openai-compat-llm.js";
 export { OpenAICompatEmbedder } from "./backends/openai-compat-embedder.js";
+export { NoopReranker } from "./backends/noop-reranker.js";
+export { LanceDBStore } from "./backends/lancedb.js";
+export type { LanceDBConfig } from "./backends/lancedb.js";
 
 // Utilities
 export { hashContent, cosineSimilarity, now, parseDate } from "./utils/index.js";

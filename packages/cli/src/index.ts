@@ -11,6 +11,7 @@ import { registerDoctor } from "./commands/doctor.js";
 import { registerExport, registerImport } from "./commands/export-import.js";
 import { registerRetention } from "./commands/retention.js";
 import { registerSleep } from "./commands/sleep.js";
+import { registerGraph } from "./commands/graph.js";
 
 const program = new Command();
 
@@ -33,5 +34,6 @@ registerExport(program);
 registerImport(program);
 registerRetention(program);
 registerSleep(program);
+registerGraph(program);
 
 program.parse();
