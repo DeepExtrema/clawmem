@@ -104,9 +104,7 @@ export async function deduplicate(
 
   return {
     decision: parsed,
-    candidateMemory: matchingCandidate
-      ? vectorStoreResultToMemoryItem(matchingCandidate)
-      : undefined,
+    ...(matchingCandidate && { candidateMemory: vectorStoreResultToMemoryItem(matchingCandidate) }),
   };
 }
 
@@ -117,15 +115,15 @@ function vectorStoreResultToMemoryItem(
     id: r.id,
     memory: String(r.payload["memory"] ?? ""),
     userId: String(r.payload["userId"] ?? ""),
-    category: r.payload["category"] as string | undefined,
-    memoryType: r.payload["memoryType"] as MemoryItem["memoryType"],
+    ...(r.payload["category"] !== undefined && { category: r.payload["category"] as string }),
+    memoryType: (r.payload["memoryType"] as MemoryItem["memoryType"]) ?? "fact",
     createdAt: String(r.payload["createdAt"] ?? new Date().toISOString()),
     updatedAt: String(r.payload["updatedAt"] ?? new Date().toISOString()),
     isLatest: Boolean(r.payload["isLatest"] ?? true),
     version: Number(r.payload["version"] ?? 1),
-    eventDate: r.payload["eventDate"] as string | undefined,
+    ...(r.payload["eventDate"] !== undefined && { eventDate: r.payload["eventDate"] as string }),
     hash: String(r.payload["hash"] ?? hashContent(String(r.payload["memory"] ?? ""))),
     score: r.score,
-    metadata: r.payload["metadata"] as Record<string, unknown> | undefined,
+    ...(r.payload["metadata"] !== undefined && { metadata: r.payload["metadata"] as Record<string, unknown> }),
   };
 }

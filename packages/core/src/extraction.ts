@@ -53,7 +53,7 @@ export async function extractMemories(
     updatedAt: ts,
     isLatest: true,
     version: 1,
-    eventDate: e.eventDate ?? undefined,
+    ...(e.eventDate != null && { eventDate: e.eventDate }),
     hash: hashContent(e.memory),
     embedding: embeddings[i] ?? [],
     metadata: {},

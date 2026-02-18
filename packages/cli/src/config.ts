@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
-import { join, homedir } from "path";
+import { join } from "path";
+import { homedir } from "os";
 import { Memory } from "@clawmem/core";
 import type { ClawMemConfig } from "@clawmem/core";
 
@@ -48,8 +49,8 @@ export function createMemory(config: CliConfig): Memory {
     llm: config.llm,
     embedder: config.embedder,
     enableGraph: config.enableGraph ?? true,
-    dedupThreshold: config.dedupThreshold,
-    defaultTopK: config.defaultTopK,
+    ...(config.dedupThreshold !== undefined && { dedupThreshold: config.dedupThreshold }),
+    ...(config.defaultTopK !== undefined && { defaultTopK: config.defaultTopK }),
   };
   return new Memory(memConfig);
 }

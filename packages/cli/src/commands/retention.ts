@@ -15,7 +15,7 @@ export function registerRetention(program: Command): void {
 
       try {
         const { expired, deleted } = await mem.retentionScanner(userId, {
-          autoDelete: opts.delete,
+          ...(opts.delete !== undefined && { autoDelete: opts.delete }),
         });
 
         if (opts.json) {

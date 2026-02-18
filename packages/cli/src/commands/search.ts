@@ -28,8 +28,8 @@ export function registerSearch(program: Command): void {
           userId,
           limit: parseInt(opts.limit, 10),
           threshold: parseFloat(opts.threshold),
-          keywordSearch: opts.keyword,
-          category: opts.category as never,
+          ...(opts.keyword !== undefined && { keywordSearch: opts.keyword }),
+          ...(opts.category !== undefined && { category: opts.category as never }),
         });
 
         if (opts.json) {

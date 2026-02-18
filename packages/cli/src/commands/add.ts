@@ -18,7 +18,7 @@ export function registerAdd(program: Command): void {
       try {
         const result = await mem.add(
           [{ role: "user", content: text }],
-          { userId, customInstructions: opts.instructions },
+          { userId, ...(opts.instructions !== undefined && { customInstructions: opts.instructions }) },
         );
 
         if (result.added.length > 0) {
@@ -33,8 +33,8 @@ export function registerAdd(program: Command): void {
             console.log(`   ${m.id.slice(0, 8)}…  "${m.memory}"`);
           }
         }
-        if (result.skipped.length > 0) {
-          console.log(`⏭️  ${result.skipped.length} skipped (duplicates)`);
+        if (result.deduplicated > 0) {
+          console.log(`⏭️  ${result.deduplicated} skipped (duplicates)`);
         }
         if (result.added.length === 0 && result.updated.length === 0) {
           console.log("No memories extracted from input.");

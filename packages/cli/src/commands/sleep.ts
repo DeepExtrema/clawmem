@@ -45,8 +45,8 @@ export function registerSleep(program: Command): void {
         if (opts.dryRun) console.log(`   (dry run — no changes will be made)`);
 
         const digest = await sleepWithLlm.run(userId, {
-          date: opts.date,
-          dryRun: opts.dryRun,
+          ...(opts.date !== undefined && { date: opts.date }),
+          ...(opts.dryRun !== undefined && { dryRun: opts.dryRun }),
         });
 
         if (opts.json) {
