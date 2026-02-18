@@ -1,57 +1,7 @@
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { describe, it, expect } from "vitest";
 import { Memory } from "../src/memory.js";
-import { SqliteVecStore } from "../src/backends/sqlite-vec.js";
-import { SqliteHistoryStore } from "../src/backends/sqlite-history.js";
-import { hashContent } from "../src/utils/index.js";
-import type { LLM, LLMMessage, Embedder } from "../src/interfaces/index.js";
-import { tmpdir } from "os";
-import { join } from "path";
-import { mkdirSync, rmSync } from "fs";
-import { randomUUID } from "crypto";
-
-// Reusable mock helpers
-class MockLLM implements LLM {
-  public responses: string[];
-  public idx = 0;
-  constructor(responses: string[]) { this.responses = responses; }
-  async complete(_m: LLMMessage[], _o?: { json?: boolean }): Promise<string> {
-    const r = this.responses[this.idx % this.responses.length];
-    this.idx++;
-    return r ?? "{}";
-  }
-}
-class MockEmbedder implements Embedder {
-  readonly dimension = 4;
-  async embed(text: string): Promise<number[]> {
-    const h = hashContent(text);
-    return [
-      parseInt(h.slice(0, 2), 16) / 255,
-      parseInt(h.slice(2, 4), 16) / 255,
-      parseInt(h.slice(4, 6), 16) / 255,
-      parseInt(h.slice(6, 8), 16) / 255,
-    ];
-  }
-  async embedBatch(texts: string[]): Promise<number[][]> {
-    return Promise.all(texts.map(t => this.embed(t)));
-  }
-}
-
-function makeMemory(llm: LLM, embedder: Embedder, userId?: string) {
-  const vectorStore = new SqliteVecStore({ dbPath: ":memory:", dimension: 4 });
-  const historyStore = new SqliteHistoryStore({ dbPath: ":memory:" });
-  const dataDir = join(tmpdir(), `clawmem-p2-${randomUUID()}`);
-  mkdirSync(dataDir, { recursive: true });
-  return new Memory({
-    dataDir,
-    llm: { baseURL: "" },
-    embedder: { baseURL: "" },
-    enableGraph: false,
-    llmInstance: llm,
-    embedderInstance: embedder,
-    vectorStore,
-    historyStore,
-  });
-}
+import type { LLM, Embedder } from "../src/interfaces/index.js";
+import { MockLLM, MockEmbedder, makeMemory } from "./helpers.js";
 
 describe("Phase 2 Tests — Graph, Profiles, Contradiction", () => {
   // -------------------------------------------------------------------------
@@ -69,7 +19,7 @@ describe("Phase 2 Tests — Graph, Profiles, Contradiction", () => {
         ],
       });
       const llm = new MockLLM([extractResponse]);
-      const mem = makeMemory(llm, new MockEmbedder());
+      const { memory: mem } = makeMemory(llm, new MockEmbedder());
 
       await mem.add(
         [{ role: "user", content: "I'm a software engineer building OpenClaw plugins." }],
@@ -98,7 +48,7 @@ describe("Phase 2 Tests — Graph, Profiles, Contradiction", () => {
         ],
       });
       const llm = new MockLLM([extractResponse]);
-      const mem = makeMemory(llm, new MockEmbedder());
+      const { memory: mem } = makeMemory(llm, new MockEmbedder());
 
       const addResult = await mem.add(
         [{ role: "user", content: "I use an AMD GPU and run llama.cpp." }],
@@ -130,7 +80,7 @@ describe("Phase 2 Tests — Graph, Profiles, Contradiction", () => {
       });
 
       const llm = new MockLLM([extract1, extract2, "{}"]);
-      const mem = makeMemory(llm, new MockEmbedder());
+      const { memory: mem } = makeMemory(llm, new MockEmbedder());
 
       const r1 = await mem.add(
         [{ role: "user", content: "I use bash." }],
@@ -167,7 +117,7 @@ describe("Phase 2 Tests — Graph, Profiles, Contradiction", () => {
       });
 
       const llm = new MockLLM([extract1, extract2, "{}"]);
-      const mem = makeMemory(llm, new MockEmbedder());
+      const { memory: mem } = makeMemory(llm, new MockEmbedder());
 
       const r1 = await mem.add([{ role: "user", content: "I prefer Python." }], { userId: "search-latest-user" });
       const oldId = r1.added[0]!.id;
@@ -199,7 +149,7 @@ describe("Phase 2 Tests — Graph, Profiles, Contradiction", () => {
         ],
       });
       const llm = new MockLLM([extractResponse]);
-      const mem = makeMemory(llm, new MockEmbedder());
+      const { memory: mem } = makeMemory(llm, new MockEmbedder());
 
       await mem.add(
         [{ role: "user", content: "I'm Alex, I use VSCode and want to learn Rust." }],
@@ -226,7 +176,7 @@ describe("Phase 2 Tests — Graph, Profiles, Contradiction", () => {
         ],
       });
       const llm = new MockLLM([extractResponse]);
-      const mem = makeMemory(llm, new MockEmbedder());
+      const { memory: mem } = makeMemory(llm, new MockEmbedder());
 
       await mem.add([{ role: "user", content: "I live in NYC." }], { userId: "delete-user" });
 
@@ -251,7 +201,7 @@ describe("Phase 2 Tests — Graph, Profiles, Contradiction", () => {
         ],
       });
       const llm = new MockLLM([extractResponse]);
-      const mem = makeMemory(llm, new MockEmbedder());
+      const { memory: mem } = makeMemory(llm, new MockEmbedder());
 
       const r = await mem.add([{ role: "user", content: "I am 25." }], { userId: "update-user" });
       const id = r.added[0]!.id;

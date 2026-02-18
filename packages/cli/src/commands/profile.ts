@@ -1,5 +1,5 @@
 import type { Command } from "commander";
-import { loadConfig, createMemory } from "../config.js";
+import { withMemory } from "../command-base.js";
 import { buildProfileSummary } from "@clawmem/core";
 
 export function registerProfile(program: Command): void {
@@ -9,11 +9,7 @@ export function registerProfile(program: Command): void {
     .option("-u, --user <id>", "User ID")
     .option("--json", "Output as JSON")
     .action(async (opts: { user?: string; json?: boolean }) => {
-      const config = loadConfig();
-      const mem = createMemory(config);
-      const userId = opts.user ?? config.userId;
-
-      try {
+      await withMemory(opts, async ({ mem, userId }) => {
         const profile = await mem.profile(userId);
         const totalCount =
           profile.static.identity.length +
@@ -38,9 +34,6 @@ export function registerProfile(program: Command): void {
         console.log(`\n👤 Profile for "${userId}" (${totalCount} memories)\n`);
         console.log(buildProfileSummary(profile));
         console.log(`\nGenerated at: ${profile.generatedAt}`);
-      } catch (err) {
-        console.error("❌ Profile failed:", (err as Error).message);
-        process.exit(1);
-      }
+      });
     });
 }

@@ -151,6 +151,12 @@ export interface VectorStore {
     payload: Record<string, unknown>,
   ): Promise<void>;
 
+  /** Update only the payload (no vector change) */
+  updatePayload(id: string, payload: Record<string, unknown>): Promise<void>;
+
+  /** Find a memory by content hash (exact match). Returns null if not found. */
+  findByHash(hash: string, userId: string): Promise<VectorStoreResult | null>;
+
   /** Delete all entries matching filters */
   deleteAll(filters?: Record<string, unknown>): Promise<void>;
 }

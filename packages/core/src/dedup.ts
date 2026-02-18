@@ -1,5 +1,6 @@
 import type { LLM, Embedder, MemoryItem, VectorStore } from "./interfaces/index.js";
-import { cosineSimilarity, hashContent } from "./utils/index.js";
+import { cosineSimilarity } from "./utils/index.js";
+import { payloadToMemory } from "./utils/conversion.js";
 import {
   buildDeduplicationPrompt,
   parseDeduplicationResponse,
@@ -36,15 +37,10 @@ export async function deduplicate(
   const threshold = config.semanticThreshold ?? 0.85;
   const maxCandidates = config.maxCandidates ?? 20;
 
-  // Step 1: Hash check
-  const existing = await vectorStore.list(
-    { userId: newMemory.userId },
-    maxCandidates,
-    0,
-  );
-
-  const hashMatch = existing[0].find(
-    (r) => (r.payload["hash"] as string) === newMemory.hash,
+  // Step 1: Hash check — O(1) indexed lookup
+  const hashMatch = await vectorStore.findByHash(
+    newMemory.hash,
+    newMemory.userId,
   );
   if (hashMatch) {
     return {
@@ -53,7 +49,7 @@ export async function deduplicate(
         targetId: hashMatch.id,
         reason: "Exact duplicate (hash match)",
       },
-      candidateMemory: vectorStoreResultToMemoryItem(hashMatch),
+      candidateMemory: payloadToMemory(hashMatch.id, hashMatch.payload, hashMatch.score),
     };
   }
 
@@ -104,26 +100,12 @@ export async function deduplicate(
 
   return {
     decision: parsed,
-    ...(matchingCandidate && { candidateMemory: vectorStoreResultToMemoryItem(matchingCandidate) }),
-  };
-}
-
-function vectorStoreResultToMemoryItem(
-  r: { id: string; payload: Record<string, unknown>; score: number },
-): MemoryItem {
-  return {
-    id: r.id,
-    memory: String(r.payload["memory"] ?? ""),
-    userId: String(r.payload["userId"] ?? ""),
-    ...(r.payload["category"] !== undefined && { category: r.payload["category"] as string }),
-    memoryType: (r.payload["memoryType"] as MemoryItem["memoryType"]) ?? "fact",
-    createdAt: String(r.payload["createdAt"] ?? new Date().toISOString()),
-    updatedAt: String(r.payload["updatedAt"] ?? new Date().toISOString()),
-    isLatest: Boolean(r.payload["isLatest"] ?? true),
-    version: Number(r.payload["version"] ?? 1),
-    ...(r.payload["eventDate"] !== undefined && { eventDate: r.payload["eventDate"] as string }),
-    hash: String(r.payload["hash"] ?? hashContent(String(r.payload["memory"] ?? ""))),
-    score: r.score,
-    ...(r.payload["metadata"] !== undefined && { metadata: r.payload["metadata"] as Record<string, unknown> }),
+    ...(matchingCandidate && {
+      candidateMemory: payloadToMemory(
+        matchingCandidate.id,
+        matchingCandidate.payload,
+        matchingCandidate.score,
+      ),
+    }),
   };
 }

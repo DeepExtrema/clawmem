@@ -32,44 +32,9 @@ function createTestMemory(dataDir: string, overrides?: Partial<ClawMemConfig>): 
 // Mock backends for unit tests (no real LLM needed)
 // ---------------------------------------------------------------------------
 
-import type { LLM, LLMMessage, Embedder, VectorStore, VectorStoreResult } from "../src/interfaces/index.js";
-import { hashContent } from "../src/utils/index.js";
+import { MockLLM, MockEmbedder } from "./helpers.js";
 import { SqliteVecStore } from "../src/backends/sqlite-vec.js";
 import { SqliteHistoryStore } from "../src/backends/sqlite-history.js";
-
-class MockLLM implements LLM {
-  public responses: string[];
-  public idx = 0;
-
-  constructor(responses: string[]) {
-    this.responses = responses;
-  }
-
-  async complete(_messages: LLMMessage[], _opts?: { json?: boolean }): Promise<string> {
-    const r = this.responses[this.idx % this.responses.length];
-    this.idx++;
-    return r ?? "{}";
-  }
-}
-
-class MockEmbedder implements Embedder {
-  readonly dimension = 4;
-
-  async embed(text: string): Promise<number[]> {
-    // Deterministic fake embedding from hash
-    const h = hashContent(text);
-    return [
-      parseInt(h.slice(0, 2), 16) / 255,
-      parseInt(h.slice(2, 4), 16) / 255,
-      parseInt(h.slice(4, 6), 16) / 255,
-      parseInt(h.slice(6, 8), 16) / 255,
-    ];
-  }
-
-  async embedBatch(texts: string[]): Promise<number[][]> {
-    return Promise.all(texts.map((t) => this.embed(t)));
-  }
-}
 
 // ---------------------------------------------------------------------------
 // Test suite

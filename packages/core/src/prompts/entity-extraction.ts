@@ -41,27 +41,13 @@ export interface ExtractedRelation {
   confidence?: number;
 }
 
+import { parseLLMJson } from "../utils/parse-llm-json.js";
+
 export function parseEntityExtractionResponse(raw: string): {
   entities: ExtractedEntity[];
   relations: ExtractedRelation[];
 } {
-  const cleaned = raw
-    .replace(/^```(?:json)?\s*/i, "")
-    .replace(/\s*```$/, "")
-    .trim();
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(cleaned);
-  } catch {
-    const match = cleaned.match(/\{[\s\S]*\}/);
-    if (!match) return { entities: [], relations: [] };
-    try {
-      parsed = JSON.parse(match[0]);
-    } catch {
-      return { entities: [], relations: [] };
-    }
-  }
+  const parsed = parseLLMJson(raw);
 
   if (typeof parsed !== "object" || parsed === null) {
     return { entities: [], relations: [] };

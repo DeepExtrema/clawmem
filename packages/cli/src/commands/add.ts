@@ -1,5 +1,5 @@
 import type { Command } from "commander";
-import { loadConfig, createMemory } from "../config.js";
+import { withMemory } from "../command-base.js";
 
 export function registerAdd(program: Command): void {
   program
@@ -11,11 +11,7 @@ export function registerAdd(program: Command): void {
       user?: string;
       instructions?: string;
     }) => {
-      const config = loadConfig();
-      const mem = createMemory(config);
-      const userId = opts.user ?? config.userId;
-
-      try {
+      await withMemory(opts, async ({ mem, userId }) => {
         const result = await mem.add(
           [{ role: "user", content: text }],
           { userId, ...(opts.instructions !== undefined && { customInstructions: opts.instructions }) },
@@ -39,9 +35,6 @@ export function registerAdd(program: Command): void {
         if (result.added.length === 0 && result.updated.length === 0) {
           console.log("No memories extracted from input.");
         }
-      } catch (err) {
-        console.error("❌ Add failed:", (err as Error).message);
-        process.exit(1);
-      }
+      });
     });
 }

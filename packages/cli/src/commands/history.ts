@@ -1,5 +1,5 @@
 import type { Command } from "commander";
-import { loadConfig, createMemory } from "../config.js";
+import { withMemory } from "../command-base.js";
 
 export function registerHistory(program: Command): void {
   program
@@ -7,10 +7,7 @@ export function registerHistory(program: Command): void {
     .description("Show version history for a memory (full audit trail)")
     .option("--json", "Output as JSON")
     .action(async (memoryId: string, opts: { json?: boolean }) => {
-      const config = loadConfig();
-      const mem = createMemory(config);
-
-      try {
+      await withMemory(opts as { user?: string }, async ({ mem }) => {
         const entries = await mem.history(memoryId);
 
         if (opts.json) {
@@ -30,9 +27,6 @@ export function registerHistory(program: Command): void {
           if (e.newValue) console.log(`    now: "${e.newValue}"`);
           console.log();
         }
-      } catch (err) {
-        console.error("❌ History failed:", (err as Error).message);
-        process.exit(1);
-      }
+      });
     });
 }

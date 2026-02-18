@@ -29,9 +29,33 @@ import {
 } from "./prompts/entity-extraction.js";
 import { buildProfileSummary } from "./prompts/profile.js";
 import { now, hashContent } from "./utils/index.js";
+import { payloadToMemory } from "./utils/conversion.js";
 
 // ---------------------------------------------------------------------------
 // Config
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Logger interface
+// ---------------------------------------------------------------------------
+
+export interface Logger {
+  info(msg: string, ...args: unknown[]): void;
+  warn(msg: string, ...args: unknown[]): void;
+  error(msg: string, ...args: unknown[]): void;
+  debug(msg: string, ...args: unknown[]): void;
+}
+
+/** No-op logger used when no logger is provided */
+export const nullLogger: Logger = {
+  info() {},
+  warn() {},
+  error() {},
+  debug() {},
+};
+
+// ---------------------------------------------------------------------------
+// Config — what the user passes in
 // ---------------------------------------------------------------------------
 
 export interface ClawMemConfig {
@@ -84,12 +108,30 @@ export interface ClawMemConfig {
   /** Enable LLM-based query rewriting for short queries (P4-5). Default: false */
   enableQueryRewriting?: boolean;
 
+  /** Optional logger for diagnostics */
+  logger?: Logger;
+
   // Advanced: override backends
   vectorStore?: VectorStore;
   graphStore?: GraphStore;
   historyStore?: HistoryStore;
   llmInstance?: LLM;
   embedderInstance?: Embedder;
+}
+
+/** Resolved scalar settings (no instance refs). Used internally. */
+export interface ClawMemSettings {
+  dataDir: string;
+  llm: ClawMemConfig["llm"];
+  embedder: ClawMemConfig["embedder"];
+  enableGraph: boolean;
+  dedupThreshold: number;
+  defaultTopK: number;
+  defaultThreshold: number;
+  maxMemories: number;
+  customInstructions: string;
+  forgettingRules: { fact: number; preference: number; episode: number };
+  enableQueryRewriting: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -102,13 +144,16 @@ export class Memory {
   private readonly historyStore: HistoryStore;
   private readonly llm: LLM;
   private readonly embedder: Embedder;
-  private readonly config: Required<ClawMemConfig>;
+  private readonly config: ClawMemSettings;
+  private readonly log: Logger;
 
   constructor(config: ClawMemConfig) {
     // Resolve data directory
     mkdirSync(config.dataDir, { recursive: true });
 
-    // Fill in defaults
+    this.log = config.logger ?? nullLogger;
+
+    // Fill in defaults (scalars only — no instance refs)
     this.config = {
       dataDir: config.dataDir,
       llm: config.llm,
@@ -119,13 +164,12 @@ export class Memory {
       defaultThreshold: config.defaultThreshold ?? 0.5,
       maxMemories: config.maxMemories ?? 10000,
       customInstructions: config.customInstructions ?? "",
-      forgettingRules: config.forgettingRules ?? {},
+      forgettingRules: {
+        fact: config.forgettingRules?.fact ?? 0,
+        preference: config.forgettingRules?.preference ?? 0,
+        episode: config.forgettingRules?.episode ?? 0,
+      },
       enableQueryRewriting: config.enableQueryRewriting ?? false,
-      vectorStore: config.vectorStore!,
-      graphStore: config.graphStore!,
-      historyStore: config.historyStore!,
-      llmInstance: config.llmInstance!,
-      embedderInstance: config.embedderInstance!,
     };
 
     // Initialize backends
@@ -199,7 +243,7 @@ export class Memory {
       }
 
       if (decision.action === "update" && candidateMemory) {
-        // Mark old memory as not latest
+        // Mark old memory as not latest — reuse existing embedding (content unchanged)
         const oldPayload = await this.vectorStore.get(candidateMemory.id);
         if (oldPayload) {
           const updatedOld = {
@@ -207,11 +251,7 @@ export class Memory {
             isLatest: false,
             updatedAt: now(),
           };
-          // Re-embed the old payload to update it
-          const oldEmbedding = await this.embedder.embed(
-            String(oldPayload.payload["memory"] ?? ""),
-          );
-          await this.vectorStore.update(candidateMemory.id, oldEmbedding, updatedOld);
+          await this.vectorStore.updatePayload(candidateMemory.id, updatedOld);
         }
 
         // Store new memory
@@ -325,8 +365,9 @@ export class Memory {
           })),
         );
       }
-    } catch {
+    } catch (err) {
       // Graph enrichment is best-effort — don't fail the add
+      this.log.warn("Graph enrichment failed for memory %s: %s", mem.id, err);
     }
   }
 
@@ -346,14 +387,12 @@ export class Memory {
     const queryEmbedding = await this.embedder.embed(effectiveQuery);
     const vectorResults = await this.vectorStore.search(queryEmbedding, limit * 2, {
       userId: options.userId,
+      isLatest: true,
     });
 
     let results = vectorResults
       .filter((r) => r.score >= threshold)
-      .map((r) => this.payloadToMemory(r.id, r.payload, r.score));
-
-    // Filter: only latest by default
-    results = results.filter((m) => m.isLatest !== false);
+      .map((r) => this.toMemoryItem(r.id, r.payload, r.score));
 
     // Category filter
     if (options.category) {
@@ -398,7 +437,7 @@ export class Memory {
         userId: options.userId,
       });
       const kwMemories = kwResults.map((r) =>
-        this.payloadToMemory(r.id, r.payload, r.score * 0.7),
+        this.toMemoryItem(r.id, r.payload, r.score * 0.7),
       );
 
       // Merge, deduplicate by id, prefer higher score
@@ -422,7 +461,7 @@ export class Memory {
   async get(id: string): Promise<MemoryItem | null> {
     const result = await this.vectorStore.get(id);
     if (!result) return null;
-    return this.payloadToMemory(result.id, result.payload, 1);
+    return this.toMemoryItem(result.id, result.payload, 1);
   }
 
   async getAll(options: GetAllOptions): Promise<MemoryItem[]> {
@@ -433,7 +472,7 @@ export class Memory {
     );
 
     let memories = results.map((r) =>
-      this.payloadToMemory(r.id, r.payload, 1),
+      this.toMemoryItem(r.id, r.payload, 1),
     );
 
     if (options.onlyLatest !== false) {
@@ -761,31 +800,11 @@ export class Memory {
     };
   }
 
-  private payloadToMemory(
+  private toMemoryItem(
     id: string,
     payload: Record<string, unknown>,
     score: number,
   ): MemoryItem {
-    const item: MemoryItem = {
-      id,
-      memory: String(payload["memory"] ?? ""),
-      userId: String(payload["userId"] ?? ""),
-      createdAt: String(payload["createdAt"] ?? new Date().toISOString()),
-      updatedAt: String(payload["updatedAt"] ?? new Date().toISOString()),
-      isLatest: payload["isLatest"] !== false,
-      version: Number(payload["version"] ?? 1),
-      hash: String(payload["hash"] ?? hashContent(String(payload["memory"] ?? ""))),
-      score,
-    };
-    if (payload["category"] !== undefined) item.category = payload["category"] as string;
-    if (payload["memoryType"] !== undefined) {
-      const mt = payload["memoryType"] as string;
-      if (mt === "fact" || mt === "preference" || mt === "episode") {
-        item.memoryType = mt;
-      }
-    }
-    if (payload["eventDate"] !== undefined) item.eventDate = payload["eventDate"] as string;
-    if (payload["metadata"] !== undefined) item.metadata = payload["metadata"] as Record<string, unknown>;
-    return item;
+    return payloadToMemory(id, payload, score);
   }
 }

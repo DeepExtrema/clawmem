@@ -1,5 +1,5 @@
 import type { Command } from "commander";
-import { loadConfig, createMemory } from "../config.js";
+import { withMemory } from "../command-base.js";
 
 export function registerForget(program: Command): void {
   program
@@ -8,11 +8,7 @@ export function registerForget(program: Command): void {
     .option("-u, --user <id>", "User ID")
     .option("-y, --yes", "Skip confirmation")
     .action(async (id: string, opts: { user?: string; yes?: boolean }) => {
-      const config = loadConfig();
-      const mem = createMemory(config);
-      const userId = opts.user ?? config.userId;
-
-      try {
+      await withMemory(opts, async ({ mem, userId }) => {
         if (id === "all") {
           if (!opts.yes) {
             const { createInterface } = await import("readline");
@@ -38,9 +34,6 @@ export function registerForget(program: Command): void {
           console.log(`✅ Deleted: ${id.slice(0, 8)}…`);
           console.log(`   "${existing.memory}"`);
         }
-      } catch (err) {
-        console.error("❌ Forget failed:", (err as Error).message);
-        process.exit(1);
-      }
+      });
     });
 }

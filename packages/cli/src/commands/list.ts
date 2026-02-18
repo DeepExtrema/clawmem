@@ -1,5 +1,5 @@
 import type { Command } from "commander";
-import { loadConfig, createMemory } from "../config.js";
+import { withMemory } from "../command-base.js";
 
 export function registerList(program: Command): void {
   program
@@ -19,11 +19,7 @@ export function registerList(program: Command): void {
       type?: string;
       json?: boolean;
     }) => {
-      const config = loadConfig();
-      const mem = createMemory(config);
-      const userId = opts.user ?? config.userId;
-
-      try {
+      await withMemory(opts, async ({ mem, userId }) => {
         const memories = await mem.getAll({
           userId,
           limit: parseInt(opts.limit, 10),
@@ -52,9 +48,6 @@ export function registerList(program: Command): void {
           console.log(`  ${m.createdAt.slice(0, 10)}`);
           console.log();
         }
-      } catch (err) {
-        console.error("❌ List failed:", (err as Error).message);
-        process.exit(1);
-      }
+      });
     });
 }

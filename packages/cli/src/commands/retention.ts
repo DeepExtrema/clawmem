@@ -1,5 +1,5 @@
 import type { Command } from "commander";
-import { loadConfig, createMemory } from "../config.js";
+import { withMemory } from "../command-base.js";
 
 export function registerRetention(program: Command): void {
   program
@@ -9,11 +9,7 @@ export function registerRetention(program: Command): void {
     .option("--delete", "Auto-delete expired memories (default: dry run)")
     .option("--json", "Output as JSON")
     .action(async (opts: { user?: string; delete?: boolean; json?: boolean }) => {
-      const config = loadConfig();
-      const mem = createMemory(config);
-      const userId = opts.user ?? config.userId;
-
-      try {
+      await withMemory(opts, async ({ mem, userId }) => {
         const { expired, deleted } = await mem.retentionScanner(userId, {
           ...(opts.delete !== undefined && { autoDelete: opts.delete }),
         });
@@ -42,9 +38,6 @@ export function registerRetention(program: Command): void {
         } else {
           console.log(`💡 Dry run — use --delete to remove expired memories.`);
         }
-      } catch (err) {
-        console.error("❌ Retention scan failed:", (err as Error).message);
-        process.exit(1);
-      }
+      });
     });
 }

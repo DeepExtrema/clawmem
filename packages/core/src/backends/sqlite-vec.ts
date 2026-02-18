@@ -1,9 +1,9 @@
 import Database from "better-sqlite3";
-import { createHash } from "crypto";
 import type {
   VectorStore,
   VectorStoreResult,
 } from "../interfaces/index.js";
+import { cosineSimilarity } from "../utils/index.js";
 
 /**
  * SQLite-based vector store using sqlite-vec extension.
@@ -45,7 +45,10 @@ export class SqliteVecStore implements VectorStore {
       sqliteVec.load(this.db);
       this.hasVecExtension = true;
     } catch {
-      // sqlite-vec not available — use fallback cosine similarity
+      // sqlite-vec not available — O(n) linear fallback
+      console.warn(
+        "[clawmem] sqlite-vec extension not available — falling back to O(n) linear cosine similarity. Install sqlite-vec for ANN search.",
+      );
     }
 
     // Main memories table
@@ -60,6 +63,9 @@ export class SqliteVecStore implements VectorStore {
       );
 
       CREATE INDEX IF NOT EXISTS memories_user_id ON memories(user_id);
+      CREATE INDEX IF NOT EXISTS memories_hash ON memories(
+        json_extract(payload, '$.hash')
+      );
     `);
 
     // FTS5 for keyword search
@@ -161,6 +167,7 @@ export class SqliteVecStore implements VectorStore {
   ): VectorStoreResult[] {
     const queryBuffer = Buffer.from(new Float32Array(query).buffer);
     const userId = filters?.["userId"] as string | undefined;
+    const isLatest = filters?.["isLatest"] as boolean | undefined;
 
     let sql = `
       SELECT m.id, m.payload, v.distance
@@ -173,6 +180,10 @@ export class SqliteVecStore implements VectorStore {
     if (userId) {
       sql += ` AND m.user_id = ?`;
       params.push(userId);
+    }
+    if (isLatest !== undefined) {
+      sql += ` AND json_extract(m.payload, '$.isLatest') = ?`;
+      params.push(isLatest ? 1 : 0);
     }
 
     sql += ` ORDER BY v.distance LIMIT ?`;
@@ -197,12 +208,22 @@ export class SqliteVecStore implements VectorStore {
     filters?: Record<string, unknown>,
   ): VectorStoreResult[] {
     const userId = filters?.["userId"] as string | undefined;
+    const isLatest = filters?.["isLatest"] as boolean | undefined;
 
     let sql = `SELECT m.id, m.payload, v.embedding FROM memories_vec v JOIN memories m ON v.id = m.id`;
+    const conditions: string[] = [];
     const params: unknown[] = [];
+
     if (userId) {
-      sql += ` WHERE m.user_id = ?`;
+      conditions.push(`m.user_id = ?`);
       params.push(userId);
+    }
+    if (isLatest !== undefined) {
+      conditions.push(`json_extract(m.payload, '$.isLatest') = ?`);
+      params.push(isLatest ? 1 : 0);
+    }
+    if (conditions.length > 0) {
+      sql += ` WHERE ${conditions.join(" AND ")}`;
     }
 
     const rows = this.db.prepare(sql).all(...params) as Array<{
@@ -325,8 +346,79 @@ export class SqliteVecStore implements VectorStore {
     vector: number[],
     payload: Record<string, unknown>,
   ): Promise<void> {
-    await this.delete(id);
-    await this.insert([vector], [id], [payload]);
+    const content = String(payload["memory"] ?? "");
+    const userId = String(payload["userId"] ?? "");
+    const vecBuffer = Buffer.from(new Float32Array(vector).buffer);
+
+    this.db.transaction(() => {
+      this.db
+        .prepare(
+          `UPDATE memories SET payload = ?, content = ?, updated_at = datetime('now') WHERE id = ?`,
+        )
+        .run(JSON.stringify(payload), content, id);
+
+      // FTS5 doesn't support UPDATE — delete + re-insert
+      this.db.prepare(`DELETE FROM memories_fts WHERE id = ?`).run(id);
+      this.db
+        .prepare(
+          `INSERT INTO memories_fts (id, content, user_id) VALUES (?, ?, ?)`,
+        )
+        .run(id, content, userId);
+
+      if (this.hasVecExtension) {
+        this.db
+          .prepare(
+            `UPDATE memories_vec SET embedding = vec_f32(?) WHERE id = ?`,
+          )
+          .run(vecBuffer, id);
+      } else {
+        this.db
+          .prepare(`UPDATE memories_vec SET embedding = ? WHERE id = ?`)
+          .run(vecBuffer, id);
+      }
+    })();
+  }
+
+  async updatePayload(
+    id: string,
+    payload: Record<string, unknown>,
+  ): Promise<void> {
+    const content = String(payload["memory"] ?? "");
+    const userId = String(payload["userId"] ?? "");
+
+    this.db.transaction(() => {
+      this.db
+        .prepare(
+          `UPDATE memories SET payload = ?, content = ?, updated_at = datetime('now') WHERE id = ?`,
+        )
+        .run(JSON.stringify(payload), content, id);
+
+      // Rebuild FTS
+      this.db.prepare(`DELETE FROM memories_fts WHERE id = ?`).run(id);
+      this.db
+        .prepare(
+          `INSERT INTO memories_fts (id, content, user_id) VALUES (?, ?, ?)`,
+        )
+        .run(id, content, userId);
+    })();
+  }
+
+  async findByHash(
+    hash: string,
+    userId: string,
+  ): Promise<VectorStoreResult | null> {
+    const row = this.db
+      .prepare(
+        `SELECT id, payload FROM memories WHERE json_extract(payload, '$.hash') = ? AND user_id = ? LIMIT 1`,
+      )
+      .get(hash, userId) as { id: string; payload: string } | undefined;
+
+    if (!row) return null;
+    return {
+      id: row.id,
+      payload: JSON.parse(row.payload) as Record<string, unknown>,
+      score: 1,
+    };
   }
 
   async deleteAll(filters?: Record<string, unknown>): Promise<void> {
@@ -334,16 +426,16 @@ export class SqliteVecStore implements VectorStore {
 
     if (userId) {
       this.db.transaction(() => {
-        const ids = (
-          this.db
-            .prepare(`SELECT id FROM memories WHERE user_id = ?`)
-            .all(userId) as Array<{ id: string }>
-        ).map((r) => r.id);
-
-        for (const id of ids) {
-          this.db.prepare(`DELETE FROM memories_vec WHERE id = ?`).run(id);
-          this.db.prepare(`DELETE FROM memories_fts WHERE id = ?`).run(id);
-        }
+        this.db
+          .prepare(
+            `DELETE FROM memories_vec WHERE id IN (SELECT id FROM memories WHERE user_id = ?)`,
+          )
+          .run(userId);
+        this.db
+          .prepare(
+            `DELETE FROM memories_fts WHERE id IN (SELECT id FROM memories WHERE user_id = ?)`,
+          )
+          .run(userId);
         this.db
           .prepare(`DELETE FROM memories WHERE user_id = ?`)
           .run(userId);
@@ -358,25 +450,4 @@ export class SqliteVecStore implements VectorStore {
   close(): void {
     this.db.close();
   }
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-function cosineSimilarity(a: number[], b: number[]): number {
-  let dot = 0;
-  let normA = 0;
-  let normB = 0;
-  for (let i = 0; i < a.length; i++) {
-    dot += (a[i] ?? 0) * (b[i] ?? 0);
-    normA += (a[i] ?? 0) ** 2;
-    normB += (b[i] ?? 0) ** 2;
-  }
-  if (normA === 0 || normB === 0) return 0;
-  return dot / (Math.sqrt(normA) * Math.sqrt(normB));
-}
-
-export function hashContent(content: string): string {
-  return createHash("sha256").update(content.trim().toLowerCase()).digest("hex").slice(0, 16);
 }

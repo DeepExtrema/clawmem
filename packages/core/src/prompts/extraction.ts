@@ -1,4 +1,5 @@
 import type { MemoryCategory } from "../interfaces/index.js";
+import { parseLLMJson } from "../utils/parse-llm-json.js";
 
 export const CATEGORY_DESCRIPTIONS: Record<MemoryCategory, string> = {
   identity: "Who the user is: name, location, age, nationality, background",
@@ -71,25 +72,7 @@ export interface ExtractedMemory {
 }
 
 export function parseExtractionResponse(raw: string): ExtractedMemory[] {
-  // Strip markdown code fences if present
-  const cleaned = raw
-    .replace(/^```(?:json)?\s*/i, "")
-    .replace(/\s*```$/, "")
-    .trim();
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(cleaned);
-  } catch {
-    // Try to extract JSON from the response
-    const match = cleaned.match(/\{[\s\S]*\}/);
-    if (!match) return [];
-    try {
-      parsed = JSON.parse(match[0]);
-    } catch {
-      return [];
-    }
-  }
+  const parsed = parseLLMJson(raw);
 
   if (
     typeof parsed !== "object" ||

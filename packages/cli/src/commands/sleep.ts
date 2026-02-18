@@ -1,5 +1,5 @@
 import type { Command } from "commander";
-import { loadConfig, createMemory } from "../config.js";
+import { withMemory } from "../command-base.js";
 import { SleepMode } from "@clawmem/core";
 import { join } from "path";
 import { DEFAULT_DATA_DIR } from "../config.js";
@@ -20,17 +20,7 @@ export function registerSleep(program: Command): void {
       dryRun?: boolean;
       json?: boolean;
     }) => {
-      const config = loadConfig();
-      const mem = createMemory(config);
-      const userId = opts.user ?? config.userId;
-
-      const sleep = new SleepMode(
-        { add: mem.add.bind(mem) as never },
-        { complete: async () => "" } as never, // LLM initialized inside createMemory
-        { logDir: opts.logDir },
-      );
-
-      try {
+      await withMemory(opts, async ({ mem, userId, config }) => {
         // Use the actual LLM from mem — we need to create a SleepMode with the real LLM
         // For now, create a standalone SleepMode with the config endpoints
         const { OpenAICompatLLM } = await import("@clawmem/core");
@@ -67,9 +57,6 @@ export function registerSleep(program: Command): void {
         if (opts.dryRun) {
           console.log(`\n💡 Dry run complete. Remove --dry-run to persist.`);
         }
-      } catch (err) {
-        console.error("❌ Sleep mode failed:", (err as Error).message);
-        process.exit(1);
-      }
+      });
     });
 }

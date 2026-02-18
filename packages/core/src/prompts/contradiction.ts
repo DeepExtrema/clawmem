@@ -38,24 +38,10 @@ export interface DeduplicationDecision {
   reason: string;
 }
 
-export function parseDeduplicationResponse(raw: string): DeduplicationDecision | null {
-  const cleaned = raw
-    .replace(/^```(?:json)?\s*/i, "")
-    .replace(/\s*```$/, "")
-    .trim();
+import { parseLLMJson } from "../utils/parse-llm-json.js";
 
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(cleaned);
-  } catch {
-    const match = cleaned.match(/\{[\s\S]*\}/);
-    if (!match) return null;
-    try {
-      parsed = JSON.parse(match[0]);
-    } catch {
-      return null;
-    }
-  }
+export function parseDeduplicationResponse(raw: string): DeduplicationDecision | null {
+  const parsed = parseLLMJson(raw);
 
   if (typeof parsed !== "object" || parsed === null) return null;
   const p = parsed as Record<string, unknown>;
