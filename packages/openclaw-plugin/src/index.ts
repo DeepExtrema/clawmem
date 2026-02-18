@@ -105,7 +105,13 @@ interface PluginApi {
 // ============================================================================
 
 const clawmemPlugin = {
-  async setup(api: PluginApi) {
+  id: "clawmem",
+  name: "ClawMem",
+  description: "ClawMem memory-slot plugin for OpenClaw — local-first, auditable, reversible.",
+  kind: "memory" as const,
+  configSchema: ClawMemPluginConfigSchema,
+
+  register(api: PluginApi) {
     const rawCfg = api.pluginConfig ?? {};
     const cfg: ClawMemPluginConfig = ClawMemPluginConfigSchema.parse(rawCfg);
 
@@ -375,7 +381,7 @@ const clawmemPlugin = {
           const memoryContext = results.map(r => `- ${r.memory}${r.category ? ` [${r.category}]` : ""}`).join("\n");
           api.logger.info(`clawmem: injecting ${results.length} memories into context`);
           return {
-            systemContext: `<relevant-memories>\nThe following memories may be relevant to this conversation:\n${memoryContext}\n</relevant-memories>`,
+            prependContext: `<relevant-memories>\nThe following memories may be relevant to this conversation:\n${memoryContext}\n</relevant-memories>`,
           };
         } catch (err) {
           api.logger.warn(`clawmem: recall failed: ${String(err)}`);
@@ -504,6 +510,7 @@ const clawmemPlugin = {
     // Service lifecycle
     // =========================================================================
     api.registerService({
+      id: "clawmem",
       async start() { api.logger.info("clawmem: plugin started"); },
       async stop() { api.logger.info("clawmem: plugin stopped"); },
     });

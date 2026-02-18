@@ -706,11 +706,16 @@ export class Memory {
     const { readFileSync } = await import("fs");
     const content = readFileSync(filePath, "utf-8");
 
-    // Extract bullet points
+    // Extract bullet points — support both MEMORY.md (no IDs) and date files (with IDs)
     const bullets = content
       .split("\n")
-      .filter((line) => line.match(/^[-*]\s+(.+)/) && !line.includes("<!-- id:"))
-      .map((line) => line.replace(/^[-*]\s+/, "").replace(/\s*\*\(.*?\)\*\s*$/, "").trim())
+      .filter((line) => line.match(/^[-*]\s+(.+)/))
+      .map((line) => line
+        .replace(/^[-*]\s+/, "")
+        .replace(/\s*<!--\s*id:[^>]*-->\s*$/, "")   // strip <!-- id:... -->
+        .replace(/\s*\*\(.*?\)\*\s*$/, "")            // strip *(type)*
+        .trim()
+      )
       .filter((line) => line.length > 5);
 
     if (bullets.length === 0) {

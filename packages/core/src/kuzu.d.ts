@@ -3,10 +3,15 @@ declare module "kuzu" {
   export class Database {
     constructor(dbPath: string, bufferPoolSize?: number);
   }
+  export class PreparedStatement {
+    isSuccess(): boolean;
+    getErrorMessage(): string;
+  }
   export class Connection {
     constructor(db: Database);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    query(cypher: string, params?: Record<string, unknown>): Promise<QueryResult>;
+    query(cypher: string, progressCallback?: () => void): Promise<QueryResult>;
+    prepare(cypher: string): Promise<PreparedStatement>;
+    execute(ps: PreparedStatement, params?: Record<string, unknown>): Promise<QueryResult>;
   }
   export class QueryResult {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any

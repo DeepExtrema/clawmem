@@ -94,7 +94,13 @@ export class KuzuGraphStore implements GraphStore {
     params?: Record<string, unknown>,
   ): Promise<unknown[]> {
     await this.ensureInit();
-    const result = await this.conn!.query(cypher, params ?? {});
+    let result;
+    if (params && Object.keys(params).length > 0) {
+      const ps = await this.conn!.prepare(cypher);
+      result = await this.conn!.execute(ps, params);
+    } else {
+      result = await this.conn!.query(cypher);
+    }
     const table = await result.getAll();
     return table;
   }
@@ -253,20 +259,13 @@ export class KuzuGraphStore implements GraphStore {
 }
 
 function rowToRelation(row: Record<string, unknown>): GraphRelation {
-  // Kùzu returns column names as "src.id", "src.name" etc.
-  const keys = Object.keys(row);
-  const get = (suffix: string) => {
-    const key = keys.find((k) => k.endsWith(suffix));
-    return key ? row[key] : undefined;
-  };
-
   return {
-    sourceId: String(get(".id") ?? get("src.id") ?? ""),
-    sourceName: String(get("src.name") ?? ""),
-    relationship: String(get("relationship") ?? get("r.relationship") ?? ""),
-    targetId: String(get("tgt.id") ?? ""),
-    targetName: String(get("tgt.name") ?? ""),
-    confidence: Number(get("confidence") ?? get("r.confidence") ?? 1),
-    createdAt: String(get("created_at") ?? get("r.created_at") ?? new Date().toISOString()),
+    sourceId: String(row["src.id"] ?? ""),
+    sourceName: String(row["src.name"] ?? ""),
+    relationship: String(row["r.relationship"] ?? ""),
+    targetId: String(row["tgt.id"] ?? ""),
+    targetName: String(row["tgt.name"] ?? ""),
+    confidence: Number(row["r.confidence"] ?? 1),
+    createdAt: String(row["r.created_at"] ?? new Date().toISOString()),
   };
 }

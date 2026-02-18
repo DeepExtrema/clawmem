@@ -1,10 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 describe("@clawmem/openclaw", () => {
-  it("exports a plugin with a setup function", async () => {
+  it("exports a plugin with a register function", async () => {
     const mod = await import("../src/index.js");
     expect(mod.default).toBeDefined();
-    expect(typeof mod.default.setup).toBe("function");
+    expect(typeof mod.default.register).toBe("function");
   });
 });
 
@@ -39,7 +39,7 @@ describe("@clawmem/openclaw — plugin API surface", () => {
     };
 
     // Setup should not throw (even if DB can't be reached - uses local SQLite)
-    await expect(mod.default.setup(mockApi as never)).resolves.not.toThrow();
+    mod.default.register(mockApi as never);
 
     // Verify all 7 tools are registered
     expect(registeredTools).toContain("memory_search");
@@ -86,7 +86,7 @@ describe("@clawmem/openclaw — plugin API surface", () => {
       registerService: vi.fn(),
     };
 
-    await mod.default.setup(mockApi as never);
+    mod.default.register(mockApi as never);
     expect(registeredHooks).not.toContain("before_agent_start");
     expect(registeredHooks).not.toContain("agent_end");
   });
