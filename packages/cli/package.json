@@ -1,0 +1,39 @@
+{
+  "name": "clawmem",
+  "version": "0.1.0",
+  "description": "ClawMem CLI — local-first AI memory. Works standalone or with OpenClaw.",
+  "type": "module",
+  "license": "Apache-2.0",
+  "author": "tekron",
+  "keywords": ["clawmem", "memory", "ai", "cli", "local-first", "vector-store", "graph"],
+  "bin": {
+    "clawmem": "./dist/index.js"
+  },
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "lint": "tsc --noEmit",
+    "clean": "rm -rf dist *.tsbuildinfo"
+  },
+  "dependencies": {
+    "@clawmem/core": "workspace:*",
+    "commander": "^12.1.0",
+    "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "tsup": "^8.3.0",
+    "vitest": "^2.1.0"
+  }
+}

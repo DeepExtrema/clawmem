@@ -1,0 +1,40 @@
+{
+  "name": "@clawmem/core",
+  "version": "0.1.0",
+  "description": "Local-first memory engine — vector + graph store, extraction, deduplication, profiles.",
+  "type": "module",
+  "license": "Apache-2.0",
+  "author": "tekron",
+  "keywords": ["memory", "ai", "vector-store", "graph", "kuzu", "local-first", "llm"],
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "lint": "tsc --noEmit",
+    "clean": "rm -rf dist *.tsbuildinfo"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.7.0",
+    "kuzu": "^0.7.0",
+    "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.12",
+    "tsup": "^8.3.0",
+    "vitest": "^2.1.0"
+  },
+  "peerDependencies": {
+    "typescript": ">=5.0.0"
+  }
+}
