@@ -1,5 +1,8 @@
 import type { Embedder, EmbedderConfig } from "../interfaces/index.js";
 
+const DEFAULT_EMBEDDER_TIMEOUT_MS = 30_000;
+const DEFAULT_BATCH_SIZE = 10;
+
 /**
  * OpenAI-compatible embedder adapter.
  * Works with any endpoint that implements the /v1/embeddings API:
@@ -14,12 +17,16 @@ export class OpenAICompatEmbedder implements Embedder {
   private readonly baseURL: string;
   private readonly apiKey: string;
   private readonly model: string;
+  private readonly timeoutMs: number;
+  private readonly batchSize: number;
 
   constructor(config: EmbedderConfig) {
     this.baseURL = config.baseURL.replace(/\/$/, "");
     this.apiKey = config.apiKey ?? "local";
     this.model = config.model ?? "text-embedding-ada-002";
     this.dimension = config.dimension ?? 768;
+    this.timeoutMs = config.timeoutMs ?? DEFAULT_EMBEDDER_TIMEOUT_MS;
+    this.batchSize = config.batchSize ?? DEFAULT_BATCH_SIZE;
   }
 
   async embed(text: string): Promise<number[]> {
@@ -30,30 +37,56 @@ export class OpenAICompatEmbedder implements Embedder {
   }
 
   async embedBatch(texts: string[]): Promise<number[][]> {
-    const response = await fetch(`${this.baseURL}/embeddings`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${this.apiKey}`,
-      },
-      body: JSON.stringify({
-        model: this.model,
-        input: texts,
-      }),
-    });
+    if (texts.length === 0) return [];
 
-    if (!response.ok) {
-      const text = await response.text();
-      throw new Error(`Embedder request failed (${response.status}): ${text}`);
+    // #47: Chunk into batchSize groups
+    const allResults: number[][] = [];
+    for (let i = 0; i < texts.length; i += this.batchSize) {
+      const chunk = texts.slice(i, i + this.batchSize);
+      const results = await this.fetchEmbeddings(chunk);
+      allResults.push(...results);
     }
+    return allResults;
+  }
 
-    const data = (await response.json()) as {
-      data: Array<{ embedding: number[]; index: number }>;
-    };
+  private async fetchEmbeddings(texts: string[]): Promise<number[][]> {
+    // #45: AbortController timeout
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
 
-    // Sort by index to maintain order
-    return data.data
-      .sort((a, b) => a.index - b.index)
-      .map((item) => item.embedding);
+    try {
+      const response = await fetch(`${this.baseURL}/embeddings`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${this.apiKey}`,
+        },
+        body: JSON.stringify({
+          model: this.model,
+          input: texts,
+        }),
+        signal: controller.signal,
+      });
+
+      if (!response.ok) {
+        const text = await response.text();
+        throw new Error(`Embedder request failed (${response.status}): ${text}`);
+      }
+
+      const data = (await response.json()) as {
+        data: Array<{ embedding: number[]; index: number }>;
+      };
+
+      return data.data
+        .sort((a, b) => a.index - b.index)
+        .map((item) => item.embedding);
+    } catch (err) {
+      if (err instanceof DOMException && err.name === "AbortError") {
+        throw new Error(`Embedder request timed out after ${this.timeoutMs}ms`);
+      }
+      throw err;
+    } finally {
+      clearTimeout(timer);
+    }
   }
 }

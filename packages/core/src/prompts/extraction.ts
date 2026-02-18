@@ -1,5 +1,9 @@
-import type { MemoryCategory } from "../interfaces/index.js";
+import type { MemoryCategory, MemoryType } from "../interfaces/index.js";
+import { MEMORY_CATEGORIES } from "../interfaces/index.js";
 import { parseLLMJson } from "../utils/parse-llm-json.js";
+
+const VALID_CATEGORIES = new Set<string>(MEMORY_CATEGORIES);
+const VALID_MEMORY_TYPES = new Set<string>(["fact", "preference", "episode"]);
 
 export const CATEGORY_DESCRIPTIONS: Record<MemoryCategory, string> = {
   identity: "Who the user is: name, location, age, nationality, background",
@@ -89,10 +93,17 @@ export function parseExtractionResponse(raw: string): ExtractedMemory[] {
 function isValidExtractedMemory(item: unknown): item is ExtractedMemory {
   if (typeof item !== "object" || item === null) return false;
   const m = item as Record<string, unknown>;
-  return (
-    typeof m["memory"] === "string" &&
-    m["memory"].length > 0 &&
-    typeof m["category"] === "string" &&
-    typeof m["memoryType"] === "string"
-  );
+  if (typeof m["memory"] !== "string" || m["memory"].length === 0) return false;
+  if (typeof m["category"] !== "string") return false;
+  if (typeof m["memoryType"] !== "string") return false;
+
+  // #53: Normalize unknown category/memoryType to safe defaults
+  if (!VALID_CATEGORIES.has(m["category"] as string)) {
+    m["category"] = "other";
+  }
+  if (!VALID_MEMORY_TYPES.has(m["memoryType"] as string)) {
+    m["memoryType"] = "fact";
+  }
+
+  return true;
 }

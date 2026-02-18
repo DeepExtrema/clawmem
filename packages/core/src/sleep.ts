@@ -12,7 +12,7 @@
  *   const digest = await sleep.run(userId);
  */
 
-import { appendFileSync, readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync } from "fs";
+import { appendFileSync, readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, unlinkSync } from "fs";
 import { join } from "path";
 import type { LLM, ConversationMessage } from "./interfaces/index.js";
 import { now } from "./utils/index.js";
@@ -141,13 +141,24 @@ export class SleepMode {
       return digest;
     }
 
-    // Read and parse unprocessed entries
+    // Read and parse entries; use .processed sidecar to know which lines are done (#35)
     const lines = readFileSync(logFile, "utf-8").split("\n").filter(Boolean);
-    const entries: ConversationLogEntry[] = lines
-      .map((line) => {
-        try { return JSON.parse(line) as ConversationLogEntry; } catch { return null; }
-      })
-      .filter((e): e is ConversationLogEntry => e !== null && !e.processed && e.userId === userId);
+    const processedFile = logFile + ".processed";
+    const processedCount = existsSync(processedFile)
+      ? parseInt(readFileSync(processedFile, "utf-8").trim(), 10) || 0
+      : 0;
+
+    const entries: Array<{ index: number; entry: ConversationLogEntry }> = [];
+    for (let i = processedCount; i < lines.length; i++) {
+      try {
+        const line = lines[i];
+        if (!line) continue;
+        const entry = JSON.parse(line) as ConversationLogEntry;
+        if (entry.userId === userId) {
+          entries.push({ index: i, entry });
+        }
+      } catch { /* skip malformed lines */ }
+    }
 
     if (entries.length === 0) {
       digest.summary = "No unprocessed conversations found.";
@@ -156,7 +167,7 @@ export class SleepMode {
 
     // Build conversation text for analysis
     const convText = entries
-      .map((e) =>
+      .map(({ entry: e }) =>
         `[${e.timestamp}]\n` +
         e.messages.map((m) => `${m.role}: ${m.content}`).join("\n"),
       )
@@ -172,18 +183,25 @@ export class SleepMode {
     const allPatterns: string[] = [];
     let finalSummary = "";
 
-    for (const chunk of chunks) {
-      try {
+    // #64: Process chunks in parallel with Promise.allSettled
+    const chunkResults = await Promise.allSettled(
+      chunks.map(async (chunk) => {
         const raw = await this.llm.complete(
           [{ role: "user", content: buildSleepAnalysisPrompt(chunk, userId) }],
           { json: true },
         );
-        const result = JSON.parse(raw) as { newFacts?: string[]; patterns?: string[]; summary?: string };
-        if (result.newFacts) allNewFacts.push(...result.newFacts);
-        if (result.patterns) allPatterns.push(...result.patterns);
-        if (result.summary) finalSummary = result.summary;
-      } catch {
-        // Best-effort analysis
+        return JSON.parse(raw) as { newFacts?: string[]; patterns?: string[]; summary?: string };
+      }),
+    );
+
+    // #56: Track which chunks succeeded
+    let succeededChunks = 0;
+    for (const result of chunkResults) {
+      if (result.status === "fulfilled") {
+        succeededChunks++;
+        if (result.value.newFacts) allNewFacts.push(...result.value.newFacts);
+        if (result.value.patterns) allPatterns.push(...result.value.patterns);
+        if (result.value.summary) finalSummary = result.value.summary;
       }
     }
 
@@ -206,18 +224,10 @@ export class SleepMode {
       }
     }
 
-    // Mark entries as processed
-    if (!opts.dryRun) {
-      const updatedLines = lines.map((line) => {
-        try {
-          const entry = JSON.parse(line) as ConversationLogEntry;
-          if (entry.userId === userId && !entry.processed) {
-            return JSON.stringify({ ...entry, processed: true });
-          }
-        } catch { /* empty */ }
-        return line;
-      });
-      writeFileSync(logFile, updatedLines.join("\n") + "\n");
+    // #35/#56: Update .processed sidecar — only advance if all chunks succeeded
+    if (!opts.dryRun && succeededChunks === chunks.length) {
+      const maxProcessedIndex = Math.max(...entries.map((e) => e.index));
+      writeFileSync(processedFile, String(maxProcessedIndex + 1));
     }
 
     // Write digest
@@ -235,7 +245,6 @@ export class SleepMode {
   cleanup(): number {
     const cutoff = Date.now() - this.retentionDays * 24 * 60 * 60 * 1000;
     let removed = 0;
-    const { unlinkSync } = require("fs");
 
     try {
       const files = readdirSync(this.logDir);

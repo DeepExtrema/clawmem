@@ -1,6 +1,6 @@
 import { randomUUID } from "crypto";
 import { join } from "path";
-import { mkdirSync } from "fs";
+import { mkdirSync, writeFileSync, readFileSync } from "fs";
 import type {
   VectorStore,
   Embedder,
@@ -27,6 +27,7 @@ import {
   buildEntityExtractionPrompt,
   parseEntityExtractionResponse,
 } from "./prompts/entity-extraction.js";
+import { parseBullets } from "./utils/parse-bullets.js";
 import { buildProfileSummary } from "./prompts/profile.js";
 import { now, hashContent } from "./utils/index.js";
 import { payloadToMemory } from "./utils/conversion.js";
@@ -183,6 +184,7 @@ export class Memory {
       new SqliteVecStore({
         dbPath: join(config.dataDir, "vector.db"),
         dimension: config.embedder.dimension ?? 768,
+        logger: this.log,
       });
 
     this.historyStore =
@@ -215,6 +217,20 @@ export class Memory {
       graphRelations: [],
     };
 
+    // #55: Enforce maxMemories limit
+    const [, currentCount] = await this.vectorStore.list(
+      { userId: options.userId, isLatest: true },
+      0, // limit=0, we only need the count
+      0,
+    );
+    if (currentCount >= this.config.maxMemories) {
+      this.log.warn(
+        "maxMemories limit reached (%d/%d) for user %s — rejecting add",
+        currentCount, this.config.maxMemories, options.userId,
+      );
+      return result;
+    }
+
     // Extract memories from conversation
     const extracted = await extractMemories(
       messages,
@@ -228,6 +244,9 @@ export class Memory {
     );
 
     if (extracted.length === 0) return result;
+
+    // Collect memories needing graph enrichment (parallelized after loop)
+    const graphQueue: MemoryItem[] = [];
 
     // Dedup and store each memory
     for (const mem of extracted) {
@@ -264,13 +283,17 @@ export class Memory {
           this.memoryToPayload(newMem),
         ]);
 
-        // Record UPDATE relationship in graph
+        // Record UPDATE relationship in graph (#18: best-effort, wrapped in try/catch)
         if (this.graphStore) {
-          await this.graphStore.createUpdate(
-            newMem.id,
-            candidateMemory.id,
-            decision.reason,
-          );
+          try {
+            await this.graphStore.createUpdate(
+              newMem.id,
+              candidateMemory.id,
+              decision.reason,
+            );
+          } catch (err) {
+            this.log.warn("Graph createUpdate failed for %s→%s: %s", newMem.id, candidateMemory.id, err);
+          }
         }
 
         // History
@@ -300,7 +323,11 @@ export class Memory {
         ]);
 
         if (this.graphStore) {
-          await this.graphStore.createExtend(mem.id, candidateMemory.id);
+          try {
+            await this.graphStore.createExtend(mem.id, candidateMemory.id);
+          } catch (err) {
+            this.log.warn("Graph createExtend failed for %s→%s: %s", mem.id, candidateMemory.id, err);
+          }
         }
 
         await this.historyStore.add({
@@ -328,12 +355,19 @@ export class Memory {
         userId: options.userId,
       });
 
-      // Extract entities for graph
+      // Queue entity extraction for graph (batched after loop)
       if (this.graphStore && options.enableGraph !== false) {
-        await this.addToGraph(mem, options.userId);
+        graphQueue.push(mem);
       }
 
       result.added.push(mem);
+    }
+
+    // Parallel graph enrichment for all newly added memories (#61)
+    if (graphQueue.length > 0) {
+      await Promise.all(
+        graphQueue.map((m) => this.addToGraph(m, options.userId)),
+      );
     }
 
     return result;
@@ -363,6 +397,7 @@ export class Memory {
             targetName: r.target,
             confidence: r.confidence ?? 1.0,
           })),
+          userId,
         );
       }
     } catch (err) {
@@ -435,6 +470,7 @@ export class Memory {
     if (options.keywordSearch && this.vectorStore.keywordSearch) {
       const kwResults = await this.vectorStore.keywordSearch(effectiveQuery, limit, {
         userId: options.userId,
+        isLatest: true,
       });
       const kwMemories = kwResults.map((r) =>
         this.toMemoryItem(r.id, r.payload, r.score * 0.7),
@@ -465,8 +501,10 @@ export class Memory {
   }
 
   async getAll(options: GetAllOptions): Promise<MemoryItem[]> {
+    // #23: Push isLatest filter to SQL for efficiency
+    const isLatest = options.onlyLatest !== false ? true : undefined;
     const [results] = await this.vectorStore.list(
-      { userId: options.userId },
+      { userId: options.userId, ...(isLatest !== undefined && { isLatest }) },
       options.limit ?? 1000,
       options.offset ?? 0,
     );
@@ -475,9 +513,6 @@ export class Memory {
       this.toMemoryItem(r.id, r.payload, 1),
     );
 
-    if (options.onlyLatest !== false) {
-      memories = memories.filter((m) => m.isLatest !== false);
-    }
     if (options.category) {
       memories = memories.filter((m) => m.category === options.category);
     }
@@ -489,8 +524,8 @@ export class Memory {
   }
 
   async delete(id: string): Promise<void> {
+    // #52: Record history BEFORE delete (write-ahead pattern)
     const mem = await this.get(id);
-    await this.vectorStore.delete(id);
     if (mem) {
       await this.historyStore.add({
         memoryId: id,
@@ -500,6 +535,7 @@ export class Memory {
         userId: mem.userId,
       });
     }
+    await this.vectorStore.delete(id);
   }
 
   async deleteAll(userId: string): Promise<void> {
@@ -542,28 +578,7 @@ export class Memory {
 
   async profile(userId: string): Promise<UserProfile> {
     const allMemories = await this.getAll({ userId, onlyLatest: true });
-    const ts = now();
-
-    // Classify by category
-    const byCategory = (cats: string[]) =>
-      allMemories.filter((m) => cats.includes(m.category ?? "other"));
-
-    return {
-      userId,
-      static: {
-        identity: byCategory(["identity"]),
-        preferences: byCategory(["preferences"]),
-        technical: byCategory(["technical", "infrastructure"]),
-        relationships: byCategory(["relationships"]),
-      },
-      dynamic: {
-        goals: byCategory(["goals"]),
-        projects: byCategory(["projects"]),
-        lifeEvents: byCategory(["life_events"]),
-      },
-      other: byCategory(["knowledge", "health", "finance", "assistant", "other"]),
-      generatedAt: ts,
-    };
+    return this.categorizeForProfile(userId, allMemories);
   }
 
   /** Get history for a memory */
@@ -593,7 +608,8 @@ export class Memory {
     opts: { autoDelete?: boolean } = {},
   ): Promise<{ expired: MemoryItem[]; deleted: number }> {
     const rules = this.config.forgettingRules;
-    if (!rules || Object.keys(rules).length === 0) {
+    const { fact, preference, episode } = rules;
+    if (fact <= 0 && preference <= 0 && episode <= 0) {
       return { expired: [], deleted: 0 };
     }
 
@@ -617,8 +633,18 @@ export class Memory {
 
     let deleted = 0;
     if (opts.autoDelete && expired.length > 0) {
+      // #30: Record history for each, then batch delete
       for (const mem of expired) {
-        await this.delete(mem.id);
+        await this.historyStore.add({
+          memoryId: mem.id,
+          action: "delete",
+          previousValue: mem.memory,
+          newValue: null,
+          userId: mem.userId,
+        });
+      }
+      for (const mem of expired) {
+        await this.vectorStore.delete(mem.id);
         deleted++;
       }
     }
@@ -641,16 +667,26 @@ export class Memory {
     outputDir: string,
     opts: { onlyLatest?: boolean } = {},
   ): Promise<string[]> {
-    const { mkdirSync, writeFileSync } = await import("fs");
     const { join: pathJoin } = await import("path");
 
     mkdirSync(outputDir, { recursive: true });
 
-    const memories = await this.getAll({
-      userId,
-      onlyLatest: opts.onlyLatest ?? true,
-      limit: 100000,
-    });
+    // #62: Paginate instead of loading all memories at once
+    const PAGE_SIZE = 1000;
+    const memories: MemoryItem[] = [];
+    let offset = 0;
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      const page = await this.getAll({
+        userId,
+        onlyLatest: opts.onlyLatest ?? true,
+        limit: PAGE_SIZE,
+        offset,
+      });
+      memories.push(...page);
+      if (page.length < PAGE_SIZE) break;
+      offset += PAGE_SIZE;
+    }
 
     // Group by date
     const byDate = new Map<string, MemoryItem[]>();
@@ -693,43 +729,44 @@ export class Memory {
       written.push(filePath);
     }
 
-    // Also write a MEMORY.md summary (latest facts)
+    // Also write a MEMORY.md summary using buildProfileSummary (#22 DRY, #29 no double-fetch)
     const summaryPath = pathJoin(outputDir, "MEMORY.md");
-    const summary = [
+    const profileData = this.categorizeForProfile(userId, memories);
+    const profileSummary = buildProfileSummary(profileData);
+    const summaryContent = [
       `# Memory — ${userId}`,
       `> Last synced: ${new Date().toISOString()}`,
       "",
-    ];
-    const profile = await this.profile(userId);
-    if (profile.static.identity.length > 0) {
-      summary.push("## Identity");
-      for (const m of profile.static.identity) summary.push(`- ${m.memory}`);
-      summary.push("");
-    }
-    if (profile.static.preferences.length > 0) {
-      summary.push("## Preferences");
-      for (const m of profile.static.preferences) summary.push(`- ${m.memory}`);
-      summary.push("");
-    }
-    if (profile.static.technical.length > 0) {
-      summary.push("## Technical");
-      for (const m of profile.static.technical) summary.push(`- ${m.memory}`);
-      summary.push("");
-    }
-    if (profile.dynamic.goals.length > 0) {
-      summary.push("## Goals");
-      for (const m of profile.dynamic.goals) summary.push(`- ${m.memory}`);
-      summary.push("");
-    }
-    if (profile.dynamic.projects.length > 0) {
-      summary.push("## Projects");
-      for (const m of profile.dynamic.projects) summary.push(`- ${m.memory}`);
-      summary.push("");
-    }
-    writeFileSync(summaryPath, summary.join("\n"));
+      profileSummary,
+    ].join("\n");
+    writeFileSync(summaryPath, summaryContent);
     written.push(summaryPath);
 
     return written;
+  }
+
+  /** Build a UserProfile from pre-fetched memories (avoids extra DB fetch) */
+  private categorizeForProfile(userId: string, allMemories: MemoryItem[]): UserProfile {
+    const ts = now();
+    const byCategory = (cats: string[]) =>
+      allMemories.filter((m) => cats.includes(m.category ?? "other"));
+
+    return {
+      userId,
+      static: {
+        identity: byCategory(["identity"]),
+        preferences: byCategory(["preferences"]),
+        technical: byCategory(["technical", "infrastructure"]),
+        relationships: byCategory(["relationships"]),
+      },
+      dynamic: {
+        goals: byCategory(["goals"]),
+        projects: byCategory(["projects"]),
+        lifeEvents: byCategory(["life_events"]),
+      },
+      other: byCategory(["knowledge", "health", "finance", "assistant", "other"]),
+      generatedAt: ts,
+    };
   }
 
   /**
@@ -742,20 +779,10 @@ export class Memory {
     userId: string,
     opts: { customInstructions?: string } = {},
   ): Promise<{ added: number; updated: number; skipped: number }> {
-    const { readFileSync } = await import("fs");
     const content = readFileSync(filePath, "utf-8");
 
-    // Extract bullet points — support both MEMORY.md (no IDs) and date files (with IDs)
-    const bullets = content
-      .split("\n")
-      .filter((line) => line.match(/^[-*]\s+(.+)/))
-      .map((line) => line
-        .replace(/^[-*]\s+/, "")
-        .replace(/\s*<!--\s*id:[^>]*-->\s*$/, "")   // strip <!-- id:... -->
-        .replace(/\s*\*\(.*?\)\*\s*$/, "")            // strip *(type)*
-        .trim()
-      )
-      .filter((line) => line.length > 5);
+    // #43: Use extracted parseBullets utility
+    const bullets = parseBullets(content);
 
     if (bullets.length === 0) {
       return { added: 0, updated: 0, skipped: 0 };
@@ -778,6 +805,22 @@ export class Memory {
     }
 
     return { added: totalAdded, updated: totalUpdated, skipped: totalSkipped };
+  }
+
+  // ---------------------------------------------------------------------------
+  // close() — release resources (#17)
+  // ---------------------------------------------------------------------------
+
+  close(): void {
+    if ("close" in this.vectorStore && typeof (this.vectorStore as { close: () => void }).close === "function") {
+      (this.vectorStore as { close: () => void }).close();
+    }
+    if ("close" in this.historyStore && typeof (this.historyStore as { close: () => void }).close === "function") {
+      (this.historyStore as { close: () => void }).close();
+    }
+    if (this.graphStore) {
+      this.graphStore.close();
+    }
   }
 
   // ---------------------------------------------------------------------------

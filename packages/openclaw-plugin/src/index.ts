@@ -126,16 +126,27 @@ const clawmemPlugin = {
       return extractUserFromContext(ctx, identityMap, cfg.userId);
     }
 
-    const mem = new Memory({
-      dataDir,
-      llm: { baseURL: cfg.llm.baseURL, ...(cfg.llm.model !== undefined && { model: cfg.llm.model }), ...(cfg.llm.apiKey !== undefined && { apiKey: cfg.llm.apiKey }) },
-      embedder: { baseURL: cfg.embedder.baseURL, ...(cfg.embedder.model !== undefined && { model: cfg.embedder.model }), ...(cfg.embedder.apiKey !== undefined && { apiKey: cfg.embedder.apiKey }), ...(cfg.embedder.dimension !== undefined && { dimension: cfg.embedder.dimension }) },
-      enableGraph: cfg.enableGraph,
-      defaultTopK: cfg.topK,
-      dedupThreshold: 0.85,
-    });
+    // #34: Wrap Memory init in try/catch — null guard in tool handlers
+    let mem: Memory | null = null;
+    try {
+      mem = new Memory({
+        dataDir,
+        llm: { baseURL: cfg.llm.baseURL, ...(cfg.llm.model !== undefined && { model: cfg.llm.model }), ...(cfg.llm.apiKey !== undefined && { apiKey: cfg.llm.apiKey }) },
+        embedder: { baseURL: cfg.embedder.baseURL, ...(cfg.embedder.model !== undefined && { model: cfg.embedder.model }), ...(cfg.embedder.apiKey !== undefined && { apiKey: cfg.embedder.apiKey }), ...(cfg.embedder.dimension !== undefined && { dimension: cfg.embedder.dimension }) },
+        enableGraph: cfg.enableGraph,
+        defaultTopK: cfg.topK,
+        dedupThreshold: 0.85,
+      });
+      api.logger.info(`clawmem: initialized (dataDir=${dataDir}, graph=${cfg.enableGraph})`);
+    } catch (err) {
+      api.logger.error(`clawmem: failed to initialize Memory — ${err}`);
+    }
 
-    api.logger.info(`clawmem: initialized (dataDir=${dataDir}, graph=${cfg.enableGraph})`);
+    /** Guard helper — returns error content if Memory is null */
+    function requireMem(): Memory {
+      if (!mem) throw new Error("ClawMem Memory is not initialized");
+      return mem;
+    }
 
     // -------------------------------------------------------------------------
     // memory_search
@@ -157,7 +168,7 @@ const clawmemPlugin = {
             query: string; limit?: number; userId?: string; category?: string; threshold?: number;
           };
           try {
-            const results = await mem.search(query, {
+            const results = await requireMem().search(query, {
               userId: resolveUser(userId),
               limit: limit ?? cfg.topK,
               threshold: threshold ?? cfg.searchThreshold,
@@ -200,7 +211,7 @@ const clawmemPlugin = {
           };
           try {
               const effInstructions = customInstructions ?? cfg.customInstructions;
-            const result = await mem.add(
+            const result = await requireMem().add(
               [{ role: "user", content }],
               { userId: resolveUser(userId), ...(effInstructions !== undefined && { customInstructions: effInstructions }) },
             );
@@ -237,7 +248,7 @@ const clawmemPlugin = {
         async execute(_id: string, params: Record<string, unknown>) {
           const { memory, userId, category } = params as { memory: string; userId?: string; category?: string };
           try {
-            const result = await mem.add(
+            const result = await requireMem().add(
               [{ role: "user", content: memory }],
               {
                 userId: resolveUser(userId),
@@ -273,7 +284,7 @@ const clawmemPlugin = {
         async execute(_id: string, params: Record<string, unknown>) {
           const { userId, limit, category } = params as { userId?: string; limit?: number; category?: string };
           try {
-            const memories = await mem.getAll({ userId: resolveUser(userId), limit: limit ?? 50, category: category as never });
+            const memories = await requireMem().getAll({ userId: resolveUser(userId), limit: limit ?? 50, category: category as never });
             if (!memories.length) {
               return { content: [{ type: "text", text: "No memories found." }], details: { count: 0 } };
             }
@@ -298,7 +309,7 @@ const clawmemPlugin = {
         parameters: Type.Object({ id: Type.String() }),
         async execute(_id: string, params: Record<string, unknown>) {
           try {
-            const m = await mem.get(params["id"] as string);
+            const m = await requireMem().get(params["id"] as string);
             if (!m) return { content: [{ type: "text", text: `Memory not found: ${params["id"]}` }], details: {} };
             return { content: [{ type: "text", text: m.memory }], details: m };
           } catch (err) {
@@ -326,12 +337,12 @@ const clawmemPlugin = {
           try {
             if (id === "all") {
               const u = resolveUser(userId);
-              await mem.deleteAll(u);
+              await requireMem().deleteAll(u);
               return { content: [{ type: "text", text: `All memories deleted for user "${u}".` }], details: { userId: u } };
             }
-            const existing = await mem.get(id);
+            const existing = await requireMem().get(id);
             if (!existing) return { content: [{ type: "text", text: `Memory not found: ${id}` }], details: {} };
-            await mem.delete(id);
+            await requireMem().delete(id);
             return { content: [{ type: "text", text: `Deleted: "${existing.memory}"` }], details: { id } };
           } catch (err) {
             return { content: [{ type: "text", text: `Memory forget failed: ${String(err)}` }], details: { error: String(err) } };
@@ -352,7 +363,7 @@ const clawmemPlugin = {
         parameters: Type.Object({ userId: Type.Optional(Type.String()) }),
         async execute(_id: string, params: Record<string, unknown>) {
           try {
-            const profile = await mem.profile(resolveUser(params["userId"] as string | undefined));
+            const profile = await requireMem().profile(resolveUser(params["userId"] as string | undefined));
             const summary = buildProfileSummary(profile);
             return { content: [{ type: "text", text: summary || "No profile data found." }], details: profile };
           } catch (err) {
@@ -376,7 +387,7 @@ const clawmemPlugin = {
         }
         const userId = extractUserFromContext(ctx, identityMap, cfg.userId);
         try {
-          const results = await mem.search(e.prompt, { userId, limit: cfg.topK, threshold: cfg.searchThreshold });
+          const results = await requireMem().search(e.prompt, { userId, limit: cfg.topK, threshold: cfg.searchThreshold });
           if (!results?.length) return;
           const memoryContext = results.map(r => `- ${r.memory}${r.category ? ` [${r.category}]` : ""}`).join("\n");
           api.logger.info(`clawmem: injecting ${results.length} memories into context`);
@@ -405,7 +416,7 @@ const clawmemPlugin = {
         if (!humanMessages.length) return;
         try {
           const messages: ConversationMessage[] = humanMessages.map(m => ({ role: "user" as const, content: m.content }));
-          const result = await mem.add(messages, { userId, ...(cfg.customInstructions !== undefined && { customInstructions: cfg.customInstructions }) });
+          const result = await requireMem().add(messages, { userId, ...(cfg.customInstructions !== undefined && { customInstructions: cfg.customInstructions }) });
           const total = result.added.length + result.updated.length;
           if (total > 0) api.logger.info(`clawmem: captured ${total} memory/memories`);
         } catch (err) {
@@ -429,7 +440,7 @@ const clawmemPlugin = {
           .option("--user <id>", "User ID")
           .option("--category <cat>", "Filter by category")
           .action(async (query: string, opts: { limit: string; user?: string; category?: string }) => {
-            const results = await mem.search(query, {
+            const results = await requireMem().search(query, {
               userId: resolveUser(opts.user),
               limit: parseInt(opts.limit, 10),
               threshold: cfg.searchThreshold,
@@ -445,7 +456,7 @@ const clawmemPlugin = {
           .option("--user <id>", "User ID")
           .action(async (opts: { user?: string }) => {
             const userId = resolveUser(opts.user);
-            const all = await mem.getAll({ userId });
+            const all = await requireMem().getAll({ userId });
             console.log(`ClawMem status:`);
             console.log(`  Data dir:     ${dataDir}`);
             console.log(`  User:         ${userId}`);
@@ -470,7 +481,7 @@ const clawmemPlugin = {
               rl.close();
               if (answer.toLowerCase() !== "yes") { console.log("Cancelled."); return; }
             }
-            await mem.deleteAll(resolveUser(opts.user));
+            await requireMem().deleteAll(resolveUser(opts.user));
             console.log("✅ All memories wiped.");
           });
 
@@ -479,7 +490,7 @@ const clawmemPlugin = {
           .description("Show user profile summary")
           .option("--user <id>", "User ID")
           .action(async (opts: { user?: string }) => {
-            const profile = await mem.profile(resolveUser(opts.user));
+            const profile = await requireMem().profile(resolveUser(opts.user));
             console.log(buildProfileSummary(profile));
           });
 
@@ -489,7 +500,7 @@ const clawmemPlugin = {
           .option("--user <id>", "User ID")
           .option("--output <dir>", "Output directory", `${dataDir}/export`)
           .action(async (opts: { user?: string; output: string }) => {
-            const written = await mem.exportMarkdown(resolveUser(opts.user), opts.output);
+            const written = await requireMem().exportMarkdown(resolveUser(opts.user), opts.output);
             console.log(`✅ Exported ${written.length} file(s) to ${opts.output}`);
             for (const f of written) console.log(`   ${f}`);
           });
@@ -499,7 +510,7 @@ const clawmemPlugin = {
           .description("Import memories from a markdown file")
           .option("--user <id>", "User ID")
           .action(async (file: string, opts: { user?: string }) => {
-            const result = await mem.importMarkdown(file, resolveUser(opts.user));
+            const result = await requireMem().importMarkdown(file, resolveUser(opts.user));
             console.log(`✅ Import: +${result.added} added, ${result.updated} updated, ${result.skipped} skipped`);
           });
       },
@@ -512,7 +523,13 @@ const clawmemPlugin = {
     api.registerService({
       id: "clawmem",
       async start() { api.logger.info("clawmem: plugin started"); },
-      async stop() { api.logger.info("clawmem: plugin stopped"); },
+      async stop() {
+        // #17: close() Memory to release DB connections
+        if (mem) {
+          try { await mem.close(); } catch { /* best-effort */ }
+        }
+        api.logger.info("clawmem: plugin stopped");
+      },
     });
   },
 };

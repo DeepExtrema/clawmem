@@ -26,5 +26,7 @@ export async function withMemory(
       err instanceof Error ? err.message : String(err),
     );
     process.exitCode = 1;
+  } finally {
+    await mem.close();
   }
 }

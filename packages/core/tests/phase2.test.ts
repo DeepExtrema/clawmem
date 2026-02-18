@@ -215,5 +215,37 @@ describe("Phase 2 Tests — Graph, Profiles, Contradiction", () => {
       expect(hist[1]?.action).toBe("update");
       expect(hist[1]?.previousValue).toBe("The user is 25 years old.");
     });
+
+    // #42: update() returns null for nonexistent ID
+    it("returns null for nonexistent ID", async () => {
+      const llm = new MockLLM([]);
+      const { memory: mem } = makeMemory(llm, new MockEmbedder());
+      const result = await mem.update("nonexistent-id", "new text");
+      expect(result).toBeNull();
+    });
+  });
+
+  // #44: Concurrent add() test
+  describe("T11: concurrent add", () => {
+    it("handles concurrent add calls without crashing", async () => {
+      const extractResponse = JSON.stringify({
+        memories: [
+          { memory: "concurrent fact", category: "other", memoryType: "fact", eventDate: null },
+        ],
+      });
+      const llm = new MockLLM([extractResponse]);
+      const { memory: mem } = makeMemory(llm, new MockEmbedder());
+
+      const results = await Promise.all([
+        mem.add([{ role: "user", content: "Fact A" }], { userId: "concurrent-user" }),
+        mem.add([{ role: "user", content: "Fact B" }], { userId: "concurrent-user" }),
+        mem.add([{ role: "user", content: "Fact C" }], { userId: "concurrent-user" }),
+      ]);
+
+      // All should succeed — total adds + dedup should equal 3
+      const totalAdded = results.reduce((sum, r) => sum + r.added.length, 0);
+      const totalDeduped = results.reduce((sum, r) => sum + r.deduplicated, 0);
+      expect(totalAdded + totalDeduped).toBe(3);
+    });
   });
 });

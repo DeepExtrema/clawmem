@@ -43,6 +43,21 @@ export interface ExtractedRelation {
 
 import { parseLLMJson } from "../utils/parse-llm-json.js";
 
+function isValidEntity(item: unknown): item is ExtractedEntity {
+  if (typeof item !== "object" || item === null) return false;
+  const e = item as Record<string, unknown>;
+  return typeof e["name"] === "string" && e["name"].length > 0 &&
+         typeof e["type"] === "string" && e["type"].length > 0;
+}
+
+function isValidRelation(item: unknown): item is ExtractedRelation {
+  if (typeof item !== "object" || item === null) return false;
+  const r = item as Record<string, unknown>;
+  return typeof r["source"] === "string" && r["source"].length > 0 &&
+         typeof r["relationship"] === "string" && r["relationship"].length > 0 &&
+         typeof r["target"] === "string" && r["target"].length > 0;
+}
+
 export function parseEntityExtractionResponse(raw: string): {
   entities: ExtractedEntity[];
   relations: ExtractedRelation[];
@@ -56,10 +71,10 @@ export function parseEntityExtractionResponse(raw: string): {
   const p = parsed as Record<string, unknown>;
   return {
     entities: Array.isArray(p["entities"])
-      ? (p["entities"] as ExtractedEntity[])
+      ? (p["entities"] as unknown[]).filter(isValidEntity)
       : [],
     relations: Array.isArray(p["relations"])
-      ? (p["relations"] as ExtractedRelation[])
+      ? (p["relations"] as unknown[]).filter(isValidRelation)
       : [],
   };
 }

@@ -170,6 +170,10 @@ export interface EmbedderConfig {
   apiKey?: string;
   model?: string;
   dimension?: number;
+  /** HTTP request timeout in milliseconds (default: 30000) */
+  timeoutMs?: number;
+  /** Max texts per batch request (default: 10) */
+  batchSize?: number;
 }
 
 export interface Embedder {
@@ -188,6 +192,8 @@ export interface LLMConfig {
   model?: string;
   temperature?: number;
   maxTokens?: number;
+  /** HTTP request timeout in milliseconds (default: 60000) */
+  timeoutMs?: number;
 }
 
 export interface LLMMessage {
@@ -235,6 +241,7 @@ export interface GraphStore {
   addEntities(
     entities: Omit<Entity, "id" | "createdAt" | "updatedAt">[],
     relations: Omit<GraphRelation, "createdAt">[],
+    userId?: string,
   ): Promise<void>;
 
   /** Search for related facts/entities by query text */

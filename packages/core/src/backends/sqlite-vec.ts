@@ -4,6 +4,7 @@ import type {
   VectorStoreResult,
 } from "../interfaces/index.js";
 import { cosineSimilarity } from "../utils/index.js";
+import type { Logger } from "../memory.js";
 
 /**
  * SQLite-based vector store using sqlite-vec extension.
@@ -22,15 +23,19 @@ export interface SqliteVecConfig {
   dbPath: string;
   /** Embedding dimension (must match your embedder) */
   dimension?: number;
+  /** Optional logger (uses console.warn if not provided) */
+  logger?: Logger;
 }
 
 export class SqliteVecStore implements VectorStore {
   private db: Database.Database;
   private readonly dimension: number;
   private hasVecExtension = false;
+  private readonly log: Logger | undefined;
 
   constructor(config: SqliteVecConfig) {
     this.dimension = config.dimension ?? 768;
+    this.log = config.logger;
     this.db = new Database(config.dbPath);
     this.db.pragma("journal_mode = WAL");
     this.db.pragma("foreign_keys = ON");
@@ -46,9 +51,12 @@ export class SqliteVecStore implements VectorStore {
       this.hasVecExtension = true;
     } catch {
       // sqlite-vec not available — O(n) linear fallback
-      console.warn(
-        "[clawmem] sqlite-vec extension not available — falling back to O(n) linear cosine similarity. Install sqlite-vec for ANN search.",
-      );
+      const msg = "[clawmem] sqlite-vec extension not available — falling back to O(n) linear cosine similarity. Install sqlite-vec for ANN search.";
+      if (this.log) {
+        this.log.warn(msg);
+      } else {
+        console.warn(msg);
+      }
     }
 
     // Main memories table
@@ -99,6 +107,14 @@ export class SqliteVecStore implements VectorStore {
     ids: string[],
     payloads: Record<string, unknown>[],
   ): Promise<void> {
+    // #38: Validate embedding dimensions
+    for (let i = 0; i < vectors.length; i++) {
+      if (vectors[i]!.length !== this.dimension) {
+        throw new Error(
+          `Embedding dimension mismatch: expected ${this.dimension}, got ${vectors[i]!.length} (index ${i})`,
+        );
+      }
+    }
     const insertMemory = this.db.prepare(`
       INSERT INTO memories (id, payload, content, user_id)
       VALUES (@id, @payload, @content, @userId)
@@ -139,9 +155,7 @@ export class SqliteVecStore implements VectorStore {
         deleteFts.run({ id });
         insertFts.run({ id, content, userId });
 
-        const vecBuffer = this.hasVecExtension
-          ? Buffer.from(new Float32Array(vector).buffer)
-          : Buffer.from(new Float32Array(vector).buffer);
+        const vecBuffer = Buffer.from(new Float32Array(vector).buffer);
         insertVec.run(id, vecBuffer);
       }
     });
@@ -213,6 +227,7 @@ export class SqliteVecStore implements VectorStore {
     let sql = `SELECT m.id, m.payload, v.embedding FROM memories_vec v JOIN memories m ON v.id = m.id`;
     const conditions: string[] = [];
     const params: unknown[] = [];
+    const FALLBACK_LIMIT = 50000;
 
     if (userId) {
       conditions.push(`m.user_id = ?`);
@@ -225,6 +240,8 @@ export class SqliteVecStore implements VectorStore {
     if (conditions.length > 0) {
       sql += ` WHERE ${conditions.join(" AND ")}`;
     }
+    sql += ` LIMIT ?`;
+    params.push(FALLBACK_LIMIT);
 
     const rows = this.db.prepare(sql).all(...params) as Array<{
       id: string;
@@ -232,8 +249,12 @@ export class SqliteVecStore implements VectorStore {
       embedding: Buffer;
     }>;
 
+    if (rows.length >= FALLBACK_LIMIT && this.log) {
+      this.log.warn(`searchFallback: result set truncated at ${FALLBACK_LIMIT} rows — consider installing sqlite-vec`);
+    }
+
     const scored = rows.map((row) => {
-      const vec = new Float32Array(row.embedding.buffer);
+      const vec = new Float32Array(row.embedding.buffer, row.embedding.byteOffset, row.embedding.byteLength / 4);
       const score = cosineSimilarity(query, Array.from(vec));
       return {
         id: row.id,
@@ -251,6 +272,16 @@ export class SqliteVecStore implements VectorStore {
     filters?: Record<string, unknown>,
   ): Promise<VectorStoreResult[]> {
     const userId = filters?.["userId"] as string | undefined;
+    const isLatest = filters?.["isLatest"] as boolean | undefined;
+
+    // #46: Quote FTS5 tokens to prevent syntax injection
+    const safeQuery = query
+      .split(/\s+/)
+      .filter(Boolean)
+      .map((w) => `"${w.replace(/"/g, '""')}"`)
+      .join(" ");
+
+    if (!safeQuery) return [];
 
     let sql = `
       SELECT f.id, m.payload, bm25(memories_fts) AS score
@@ -258,11 +289,16 @@ export class SqliteVecStore implements VectorStore {
       JOIN memories m ON f.id = m.id
       WHERE memories_fts MATCH ?
     `;
-    const params: unknown[] = [query];
+    const params: unknown[] = [safeQuery];
 
     if (userId) {
       sql += ` AND f.user_id = ?`;
       params.push(userId);
+    }
+    // #37: isLatest filter for keyword search
+    if (isLatest !== undefined) {
+      sql += ` AND json_extract(m.payload, '$.isLatest') = ?`;
+      params.push(isLatest ? 1 : 0);
     }
 
     sql += ` ORDER BY score LIMIT ?`;
@@ -308,28 +344,33 @@ export class SqliteVecStore implements VectorStore {
     offset = 0,
   ): Promise<[VectorStoreResult[], number]> {
     const userId = filters?.["userId"] as string | undefined;
+    const isLatest = filters?.["isLatest"] as boolean | undefined;
 
-    let sql = `SELECT id, payload FROM memories`;
-    const countSql = `SELECT COUNT(*) as total FROM memories`;
+    // #63: Single query with window function instead of separate count query
+    // #23: Push isLatest filter to SQL
+    const conditions: string[] = [];
     const params: unknown[] = [];
 
     if (userId) {
-      sql += ` WHERE user_id = ?`;
+      conditions.push(`user_id = ?`);
       params.push(userId);
     }
+    if (isLatest !== undefined) {
+      conditions.push(`json_extract(payload, '$.isLatest') = ?`);
+      params.push(isLatest ? 1 : 0);
+    }
 
-    sql += ` ORDER BY created_at DESC LIMIT ? OFFSET ?`;
+    const where = conditions.length > 0 ? ` WHERE ${conditions.join(" AND ")}` : "";
+    const sql = `SELECT id, payload, COUNT(*) OVER() as total FROM memories${where} ORDER BY created_at DESC LIMIT ? OFFSET ?`;
     params.push(limit, offset);
 
     const rows = this.db.prepare(sql).all(...params) as Array<{
       id: string;
       payload: string;
+      total: number;
     }>;
-    const { total } = this.db.prepare(
-      userId
-        ? `SELECT COUNT(*) as total FROM memories WHERE user_id = ?`
-        : countSql,
-    ).get(...(userId ? [userId] : [])) as { total: number };
+
+    const total = rows.length > 0 ? rows[0]!.total : 0;
 
     return [
       rows.map((row) => ({

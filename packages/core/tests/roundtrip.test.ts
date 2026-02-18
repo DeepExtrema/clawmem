@@ -46,6 +46,11 @@ describe("Markdown export/import round-trip (Fix #12)", () => {
     const memoryMd = files.find((f) => f.endsWith("MEMORY.md"));
     expect(memoryMd).toBeDefined();
     expect(existsSync(memoryMd!)).toBe(true);
+
+    // #41: MEMORY.md should contain profile section headers and memory text
+    const memoryContent = readFileSync(memoryMd!, "utf-8");
+    expect(memoryContent).toContain("# Memory — export-user");
+    expect(memoryContent).toContain("User is a developer.");
   });
 
   it("round-trips: add → export → wipe → import → verify", async () => {

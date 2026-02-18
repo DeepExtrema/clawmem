@@ -3,7 +3,7 @@ export function buildDeduplicationPrompt(
   existingMemories: Array<{ id: string; memory: string }>,
 ): string {
   const existing = existingMemories
-    .map((m, i) => `[${i}] id=${m.id}: ${m.memory}`)
+    .map((m) => `id=${m.id}: ${m.memory}`)
     .join("\n");
 
   return `You are a memory deduplication system.

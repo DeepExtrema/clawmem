@@ -57,7 +57,7 @@ export async function deduplicate(
   const similar = await vectorStore.search(
     newMemory.embedding,
     maxCandidates,
-    { userId: newMemory.userId },
+    { userId: newMemory.userId, isLatest: true },
   );
 
   const candidates = similar
@@ -94,12 +94,24 @@ export async function deduplicate(
     };
   }
 
-  const matchingCandidate = parsed.targetId
-    ? candidates.find((c) => c.id === parsed.targetId)
+  // #54: Index-to-id fallback — if LLM returned a numeric index instead of an ID
+  let resolvedTargetId = parsed.targetId;
+  if (resolvedTargetId) {
+    const matchById = candidates.find((c) => c.id === resolvedTargetId);
+    if (!matchById) {
+      const idx = parseInt(resolvedTargetId, 10);
+      if (!isNaN(idx) && idx >= 0 && idx < candidates.length) {
+        resolvedTargetId = candidates[idx].id;
+      }
+    }
+  }
+
+  const matchingCandidate = resolvedTargetId
+    ? candidates.find((c) => c.id === resolvedTargetId)
     : undefined;
 
   return {
-    decision: parsed,
+    decision: { ...parsed, targetId: resolvedTargetId ?? parsed.targetId },
     ...(matchingCandidate && {
       candidateMemory: payloadToMemory(
         matchingCandidate.id,

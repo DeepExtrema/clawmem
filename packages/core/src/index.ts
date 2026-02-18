@@ -59,3 +59,4 @@ export {
   CATEGORY_DESCRIPTIONS,
 } from "./prompts/extraction.js";
 export { buildProfileSummary } from "./prompts/profile.js";
+export { parseBullets } from "./utils/parse-bullets.js";

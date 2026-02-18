@@ -115,9 +115,12 @@ export class KuzuGraphStore implements GraphStore {
       targetName: string;
       confidence?: number;
     }>,
+    userId?: string,
   ): Promise<void> {
     await this.ensureInit();
     const ts = now();
+    // #50: Use explicit userId parameter, fall back to entities[0]?.userId
+    const effectiveUserId = userId ?? entities[0]?.userId ?? "";
 
     // Upsert entities — use name+userId as logical key
     for (const entity of entities) {
@@ -148,7 +151,7 @@ export class KuzuGraphStore implements GraphStore {
         {
           srcName: rel.sourceName,
           tgtName: rel.targetName,
-          userId: entities[0]?.userId ?? "",
+          userId: effectiveUserId,
           rel: rel.relationship,
           confidence: rel.confidence ?? 1.0,
           ts,
@@ -197,6 +200,21 @@ export class KuzuGraphStore implements GraphStore {
     return rows.map(rowToRelation);
   }
 
+  /** #33: Shared helper — ensure Memory node exists before creating relationships */
+  private async ensureMemoryNode(id: string, userId: string): Promise<void> {
+    const ts = now();
+    const exists = await this.query(
+      `MATCH (m:Memory {id: $id}) RETURN m.id`,
+      { id },
+    ) as Array<unknown>;
+    if (exists.length === 0) {
+      await this.query(
+        `CREATE (m:Memory {id: $id, content: '', user_id: $userId, is_latest: false, version: 1, created_at: $ts, updated_at: $ts})`,
+        { id, userId, ts },
+      );
+    }
+  }
+
   async createUpdate(
     newMemoryId: string,
     oldMemoryId: string,
@@ -206,18 +224,8 @@ export class KuzuGraphStore implements GraphStore {
     const ts = now();
 
     // Ensure Memory nodes exist
-    for (const id of [newMemoryId, oldMemoryId]) {
-      const exists = await this.query(
-        `MATCH (m:Memory {id: $id}) RETURN m.id`,
-        { id },
-      ) as Array<unknown>;
-      if (exists.length === 0) {
-        await this.query(
-          `CREATE (m:Memory {id: $id, content: '', user_id: '', is_latest: false, version: 1, created_at: $ts, updated_at: $ts})`,
-          { id, ts },
-        );
-      }
-    }
+    await this.ensureMemoryNode(newMemoryId, "");
+    await this.ensureMemoryNode(oldMemoryId, "");
 
     // Mark old as not latest
     await this.query(
@@ -237,6 +245,10 @@ export class KuzuGraphStore implements GraphStore {
     await this.ensureInit();
     const ts = now();
 
+    // #33: Ensure Memory nodes exist before creating EXTENDS edge
+    await this.ensureMemoryNode(newMemoryId, "");
+    await this.ensureMemoryNode(oldMemoryId, "");
+
     await this.query(
       `MATCH (new:Memory {id: $newId}), (old:Memory {id: $oldId})
        CREATE (new)-[:EXTENDS {created_at: $ts}]->(old)`,
@@ -246,8 +258,13 @@ export class KuzuGraphStore implements GraphStore {
 
   async deleteAll(userId: string): Promise<void> {
     await this.ensureInit();
+    // #19: Delete both Entity AND Memory nodes for this user
     await this.query(
       `MATCH (e:Entity {user_id: $userId}) DETACH DELETE e`,
+      { userId },
+    );
+    await this.query(
+      `MATCH (m:Memory {user_id: $userId}) DETACH DELETE m`,
       { userId },
     );
   }

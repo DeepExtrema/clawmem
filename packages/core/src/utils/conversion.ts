@@ -11,8 +11,8 @@ export function payloadToMemory(
     id,
     memory: String(payload["memory"] ?? ""),
     userId: String(payload["userId"] ?? ""),
-    createdAt: String(payload["createdAt"] ?? new Date().toISOString()),
-    updatedAt: String(payload["updatedAt"] ?? new Date().toISOString()),
+    createdAt: String(payload["createdAt"] ?? "1970-01-01T00:00:00.000Z"),
+    updatedAt: String(payload["updatedAt"] ?? "1970-01-01T00:00:00.000Z"),
     isLatest: payload["isLatest"] !== false,
     version: Number(payload["version"] ?? 1),
     hash: String(
