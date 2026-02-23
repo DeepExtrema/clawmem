@@ -5,7 +5,15 @@
   "type": "module",
   "license": "Apache-2.0",
   "author": "DeepExtrema",
-  "keywords": ["memory", "ai", "vector-store", "graph", "kuzu", "local-first", "llm"],
+  "keywords": [
+    "memory",
+    "ai",
+    "vector-store",
+    "graph",
+    "kuzu",
+    "local-first",
+    "llm"
+  ],
   "exports": {
     ".": {
       "import": "./dist/index.js",
@@ -14,7 +22,9 @@
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsup",
     "dev": "tsup --watch",
@@ -35,8 +45,8 @@
     "vitest": "^2.1.0"
   },
   "peerDependencies": {
-    "typescript": ">=5.0.0",
-    "sqlite-vec": ">=0.1.0"
+    "sqlite-vec": ">=0.1.0",
+    "typescript": ">=5.0.0"
   },
   "peerDependenciesMeta": {
     "sqlite-vec": {

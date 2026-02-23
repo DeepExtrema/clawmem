@@ -235,20 +235,23 @@ export class SqliteVecStore implements VectorStore {
       "m",
     );
 
+    // vec0 does not allow both "k = ?" and "LIMIT ?" in the same query.
+    // Use k = ? to control result count. Over-fetch when filters are present.
+    const k = conditions.length > 0 ? limit * 4 : limit;
+
     let sql = `
-      SELECT m.id, m.payload, v.distance
+      SELECT m.id, m.payload, distance
       FROM memories_vec v
       JOIN memories m ON v.id = m.id
       WHERE v.embedding MATCH ? AND k = ?
     `;
-    const params: unknown[] = [queryBuffer, limit * 2, ...filterParams];
+    const params: unknown[] = [queryBuffer, k, ...filterParams];
 
     if (conditions.length > 0) {
       sql += ` AND ${conditions.join(" AND ")}`;
     }
 
-    sql += ` ORDER BY v.distance LIMIT ?`;
-    params.push(limit);
+    sql += ` ORDER BY distance`;
 
     const rows = this.db.prepare(sql).all(...params) as Array<{
       id: string;
